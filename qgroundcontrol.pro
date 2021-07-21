@@ -62,8 +62,10 @@ QGC_APP_DESCRIPTION = "Open source ground control app provided by QGroundControl
 QGC_APP_COPYRIGHT   = "Copyright (C) 2019 QGroundControl Development Team. All rights reserved."
 
 WindowsBuild {
-    QGC_INSTALLER_ICON          = "$$SOURCE_DIR\\windows\\WindowsQGC.ico"
-    QGC_INSTALLER_HEADER_BITMAP = "$$SOURCE_DIR\\windows\\installheader.bmp"
+    QGC_INSTALLER_SCRIPT        = "$$SOURCE_DIR\\deploy\\windows\\nullsoft_installer.nsi"
+    QGC_INSTALLER_ICON          = "$$SOURCE_DIR\\deploy\\windows\\WindowsQGC.ico"
+    QGC_INSTALLER_HEADER_BITMAP = "$$SOURCE_DIR\\deploy\\windows\\installheader.bmp"
+    QGC_INSTALLER_DRIVER_MSI    = "$$SOURCE_DIR\\deploy\\windows\\driver.msi"
 }
 
 # Load additional config flags from user_config.pri
@@ -218,8 +220,7 @@ LinuxBuild {
 # Qt configuration
 
 CONFIG += qt \
-    thread \
-    c++11
+    thread
 
 DebugBuild {
     CONFIG -= qtquickcompiler
@@ -496,6 +497,7 @@ DebugBuild { PX4FirmwarePlugin { PX4FirmwarePluginFactory { APMFirmwarePlugin { 
         src/qgcunittest/MultiSignalSpyV2.h \
         src/qgcunittest/UnitTest.h \
         src/Vehicle/FTPManagerTest.h \
+        src/Vehicle/InitialConnectTest.h \
         src/Vehicle/RequestMessageTest.h \
         src/Vehicle/SendMavCommandWithHandlerTest.h \
         src/Vehicle/SendMavCommandWithSignallingTest.h \
@@ -544,6 +546,7 @@ DebugBuild { PX4FirmwarePlugin { PX4FirmwarePluginFactory { APMFirmwarePlugin { 
         src/qgcunittest/UnitTest.cc \
         src/qgcunittest/UnitTestList.cc \
         src/Vehicle/FTPManagerTest.cc \
+        src/Vehicle/InitialConnectTest.cc \
         src/Vehicle/RequestMessageTest.cc \
         src/Vehicle/SendMavCommandWithHandlerTest.cc \
         src/Vehicle/SendMavCommandWithSignallingTest.cc \
@@ -682,12 +685,16 @@ HEADERS += \
     src/Terrain/TerrainQuery.h \
     src/TerrainTile.h \
     src/Vehicle/CompInfo.h \
+    src/Vehicle/CompInfoEvents.h \
     src/Vehicle/CompInfoParam.h \
     src/Vehicle/CompInfoGeneral.h \
     src/Vehicle/ComponentInformationCache.h \
     src/Vehicle/ComponentInformationManager.h \
+    src/Vehicle/EventHandler.h \
     src/Vehicle/FTPManager.h \
     src/Vehicle/GPSRTKFactGroup.h \
+    src/Vehicle/HealthAndArmingChecks.h \
+    src/Vehicle/ImageProtocolManager.h \
     src/Vehicle/InitialConnectStateMachine.h \
     src/Vehicle/MAVLinkLogManager.h \
     src/Vehicle/MAVLinkStreamConfig.h \
@@ -917,12 +924,16 @@ SOURCES += \
     src/Terrain/TerrainQuery.cc \
     src/TerrainTile.cc\
     src/Vehicle/CompInfo.cc \
+    src/Vehicle/CompInfoEvents.cc \
     src/Vehicle/CompInfoParam.cc \
     src/Vehicle/CompInfoGeneral.cc \
     src/Vehicle/ComponentInformationCache.cc \
     src/Vehicle/ComponentInformationManager.cc \
+    src/Vehicle/EventHandler.cc \
     src/Vehicle/FTPManager.cc \
     src/Vehicle/GPSRTKFactGroup.cc \
+    src/Vehicle/HealthAndArmingChecks.cc \
+    src/Vehicle/ImageProtocolManager.cc \
     src/Vehicle/InitialConnectStateMachine.cc \
     src/Vehicle/MAVLinkLogManager.cc \
     src/Vehicle/MAVLinkStreamConfig.cc \
@@ -1226,7 +1237,10 @@ SOURCES += \
 
 #-------------------------------------------------------------------------------------
 # MAVLink Inspector
-contains (DEFINES, QGC_ENABLE_MAVLINK_INSPECTOR) {
+
+contains (DEFINES, QGC_DISABLE_MAVLINK_INSPECTOR) {
+    message("Disable mavlink inspector")
+} else {
     HEADERS += \
         src/AnalyzeView/MAVLinkInspectorController.h
     SOURCES += \
@@ -1323,7 +1337,8 @@ contains (DEFINES, QGC_AIRMAP_ENABLED) {
         src/Airmap/airmap.qrc
 
     INCLUDEPATH += \
-        src/Airmap
+        src/Airmap \
+        src/Airmap/services
 
     HEADERS += \
         src/Airmap/AirMapAdvisoryManager.h \
@@ -1339,6 +1354,21 @@ contains (DEFINES, QGC_AIRMAP_ENABLED) {
         src/Airmap/AirMapVehicleManager.h \
         src/Airmap/AirMapWeatherInfoManager.h \
         src/Airmap/LifetimeChecker.h \
+        src/Airmap/services/advisory.h \
+        src/Airmap/services/aircrafts.h \
+        src/Airmap/services/airspaces.h \
+        src/Airmap/services/authenticator.h \
+        src/Airmap/services/client.h \
+        src/Airmap/services/dispatcher.h \
+        src/Airmap/services/flight_plans.h \
+        src/Airmap/services/flights.h \
+        src/Airmap/services/logger.h \
+        src/Airmap/services/pilots.h \
+        src/Airmap/services/rulesets.h \
+        src/Airmap/services/status.h \
+        src/Airmap/services/telemetry.h \
+        src/Airmap/services/traffic.h \
+        src/Airmap/services/types.h \
 
     SOURCES += \
         src/Airmap/AirMapAdvisoryManager.cc \
@@ -1353,6 +1383,21 @@ contains (DEFINES, QGC_AIRMAP_ENABLED) {
         src/Airmap/AirMapTrafficMonitor.cc \
         src/Airmap/AirMapVehicleManager.cc \
         src/Airmap/AirMapWeatherInfoManager.cc \
+        src/Airmap/services/advisory.cpp \
+        src/Airmap/services/aircrafts.cpp \
+        src/Airmap/services/airspaces.cpp \
+        src/Airmap/services/authenticator.cpp \
+        src/Airmap/services/client.cpp \
+        src/Airmap/services/dispatcher.cpp \
+        src/Airmap/services/flight_plans.cpp \
+        src/Airmap/services/flights.cpp \
+        src/Airmap/services/logger.cpp \
+        src/Airmap/services/pilots.cpp \
+        src/Airmap/services/rulesets.cpp \
+        src/Airmap/services/status.cpp \
+        src/Airmap/services/telemetry.cpp \
+        src/Airmap/services/traffic.cpp \
+        src/Airmap/services/types.cpp \
 
     #-- Do we have an API key?
     exists(src/Airmap/Airmap_api_key.h) {
