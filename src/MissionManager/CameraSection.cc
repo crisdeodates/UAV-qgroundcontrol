@@ -1,25 +1,12 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "CameraSection.h"
 #include "SimpleMissionItem.h"
 #include "FirmwarePlugin.h"
 #include "PlanMasterController.h"
+#include "MissionItem.h"
+#include "Vehicle.h"
+#include "QGCLoggingCategory.h"
 
-QGC_LOGGING_CATEGORY(CameraSectionLog, "CameraSectionLog")
-
-const char* CameraSection::_gimbalPitchName =                   "GimbalPitch";
-const char* CameraSection::_gimbalYawName =                     "GimbalYaw";
-const char* CameraSection::_cameraActionName =                  "CameraAction";
-const char* CameraSection::_cameraPhotoIntervalDistanceName =   "CameraPhotoIntervalDistance";
-const char* CameraSection::_cameraPhotoIntervalTimeName =       "CameraPhotoIntervalTime";
-const char* CameraSection::_cameraModeName =                    "CameraMode";
+QGC_LOGGING_CATEGORY(CameraSectionLog, "Plan.CameraSection")
 
 QMap<QString, FactMetaData*> CameraSection::_metaDataMap;
 
@@ -35,6 +22,7 @@ CameraSection::CameraSection(PlanMasterController* masterController, QObject* pa
     , _cameraPhotoIntervalDistanceFact  (0, _cameraPhotoIntervalDistanceName,   FactMetaData::valueTypeDouble)
     , _cameraPhotoIntervalTimeFact      (0, _cameraPhotoIntervalTimeName,       FactMetaData::valueTypeUint32)
     , _cameraModeFact                   (0, _cameraModeName,                    FactMetaData::valueTypeUint32)
+    , _takePhotoSequence                (0)
     , _dirty                            (false)
 {
     if (_metaDataMap.isEmpty()) {
@@ -60,11 +48,11 @@ CameraSection::CameraSection(PlanMasterController* masterController, QObject* pa
 
     connect(&_cameraActionFact,                 &Fact::valueChanged,                        this, &CameraSection::_cameraActionChanged);
 
-    connect(&_gimbalPitchFact,                  &Fact::valueChanged,                        this, &CameraSection::_dirtyIfSpecified);
-    connect(&_gimbalYawFact,                    &Fact::valueChanged,                        this, &CameraSection::_dirtyIfSpecified);
-    connect(&_cameraPhotoIntervalDistanceFact,  &Fact::valueChanged,                        this, &CameraSection::_setDirty);
-    connect(&_cameraPhotoIntervalTimeFact,      &Fact::valueChanged,                        this, &CameraSection::_setDirty);
-    connect(&_cameraModeFact,                   &Fact::valueChanged,                        this, &CameraSection::_setDirty);
+    connect(&_gimbalPitchFact,                  &Fact::rawValueChanged,                     this, &CameraSection::_dirtyIfSpecified);
+    connect(&_gimbalYawFact,                    &Fact::rawValueChanged,                     this, &CameraSection::_dirtyIfSpecified);
+    connect(&_cameraPhotoIntervalDistanceFact,  &Fact::rawValueChanged,                     this, &CameraSection::_setDirty);
+    connect(&_cameraPhotoIntervalTimeFact,      &Fact::rawValueChanged,                     this, &CameraSection::_setDirty);
+    connect(&_cameraModeFact,                   &Fact::rawValueChanged,                     this, &CameraSection::_setDirty);
     connect(this,                               &CameraSection::specifyGimbalChanged,       this, &CameraSection::_setDirty);
     connect(this,                               &CameraSection::specifyCameraModeChanged,   this, &CameraSection::_setDirty);
 
@@ -204,7 +192,7 @@ void CameraSection::appendSectionItems(QList<MissionItem*>& items, QObject* miss
                                    0,                           // Reserved (Set to 0)
                                    0,                           // Interval (none)
                                    1,                           // Take 1 photo
-                                   0,                           // No sequence number specified
+                                   _takePhotoSequence++,        // Increasing sequence number
                                    qQNaN(), qQNaN(), qQNaN(),   // reserved
                                    true,                        // autoContinue
                                    false,                       // isCurrentItem
@@ -261,7 +249,7 @@ bool CameraSection::_scanGimbal(QmlObjectListModel* visualItems, int scanIndex)
     if (item) {
         MissionItem& missionItem = item->missionItem();
         if ((MAV_CMD)item->command() == MAV_CMD_DO_MOUNT_CONTROL) {
-            if (missionItem.param2() == 0 && missionItem.param4() == 0 && missionItem.param5() == 0 && missionItem.param6() == 0 && missionItem.param7() == MAV_MOUNT_MODE_MAVLINK_TARGETING) {
+            if (missionItem.param2() == 0 && missionItem.param4() == 0 && missionItem.param5() == 0 && missionItem.param6() == 0 && missionItem.param7() == static_cast<double>(MAV_MOUNT_MODE_MAVLINK_TARGETING)) {
                 setSpecifyGimbal(true);
                 gimbalPitch()->setRawValue(missionItem.param1());
                 gimbalYaw()->setRawValue(missionItem.param3());
@@ -438,7 +426,7 @@ bool CameraSection::_scanSetCameraMode(QmlObjectListModel* visualItems, int scan
         MissionItem& missionItem = item->missionItem();
         if ((MAV_CMD)item->command() == MAV_CMD_SET_CAMERA_MODE) {
             // We specifically don't test param 5/6/7 since we don't have NaN persistence for those fields
-            if (missionItem.param1() == 0 && (missionItem.param2() == CAMERA_MODE_IMAGE || missionItem.param2() == CAMERA_MODE_VIDEO || missionItem.param2() == CAMERA_MODE_IMAGE_SURVEY) && qIsNaN(missionItem.param3())) {
+            if (missionItem.param1() == 0 && (missionItem.param2() == static_cast<double>(CAMERA_MODE_IMAGE) || missionItem.param2() == static_cast<double>(CAMERA_MODE_VIDEO) || missionItem.param2() == static_cast<double>(CAMERA_MODE_IMAGE_SURVEY)) && qIsNaN(missionItem.param3())) {
                 setSpecifyCameraMode(true);
                 cameraMode()->setRawValue(missionItem.param2());
                 visualItems->removeAt(scanIndex)->deleteLater();

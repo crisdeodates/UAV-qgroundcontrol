@@ -1,22 +1,11 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtLocation
+import QtPositioning
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-import QtLocation       5.3
-import QtPositioning    5.3
-
-import QGroundControl               1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FlightMap     1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FlightMap
 
 /// Simple Mission Item visuals
 Item {
@@ -25,6 +14,7 @@ Item {
     property var map        ///< Map control to place item in
     property var vehicle    ///< Vehicle associated with this item
     property bool interactive: true
+    property MissionItemIndicatorGroup indicatorGroup
 
     property var    _missionItem:           object
     property var    _takeoffIndicatorItem
@@ -62,8 +52,8 @@ Item {
     Connections {
         target: _missionItem
 
-        onIsCurrentItemChanged: {
-            if (_missionItem.isCurrentItem && map.planView) {
+        function onIsCurrentItemChanged(isCurrentItem) {
+            if (isCurrentItem && map.planView) {
                 addEditingVisuals()
             } else {
                 _objMgrEditingVisuals.destroyObjects()
@@ -109,7 +99,8 @@ Item {
 
         MissionItemIndicator {
             coordinate:     _missionItem.specifiesCoordinate ? _missionItem.coordinate : _missionItem.launchCoordinate
-            z:              QGroundControl.zOrderMapItems
+            indicatorGroup: _root.indicatorGroup
+            interactive:    _root.interactive
             missionItem:    _missionItem
             sequenceNumber: _missionItem.sequenceNumber
             onClicked:      _root.clicked(_missionItem.sequenceNumber)
@@ -129,7 +120,7 @@ Item {
             sourceItem:
                 MissionItemIndexLabel {
                     checked:            _missionItem.isCurrentItem
-                    label:              qsTr("Launch")
+                    label:              qsTr("Home")
                     highlightSelected:  true
                     onClicked:          _root.clicked(_missionItem.sequenceNumber)
                     visible:            _root.interactive
@@ -148,13 +139,17 @@ Item {
 
             readonly property int   _decimalPlaces: 8
 
-            onClicked: {
+            onClicked: (mouse) => {
                 var coordinate = map.toCoordinate(Qt.point(mouse.x, mouse.y), false /* clipToViewPort */)
                 coordinate.latitude = coordinate.latitude.toFixed(_decimalPlaces)
                 coordinate.longitude = coordinate.longitude.toFixed(_decimalPlaces)
                 coordinate.altitude = coordinate.altitude.toFixed(_decimalPlaces)
                 _missionItem.launchCoordinate = coordinate
-                if (_missionItem.launchTakeoffAtSameLocation) {
+
+                // We drop out of wizard mode after launch position is set if:
+                //  - Takeoff location is same as launch position so nothing left to do
+                //  - Not a fixed wing. Fixed wing require warning about tweaking climb out position
+                if (_missionItem.launchTakeoffAtSameLocation || !vehicle.fixedWing) {
                     _missionItem.wizardMode = false
                 }
                 _objMgrMouseClick.destroyObjects()

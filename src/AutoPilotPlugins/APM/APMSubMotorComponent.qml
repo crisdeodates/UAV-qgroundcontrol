@@ -1,21 +1,9 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Dialogs
 
-import QtQuick          2.3
-import QtQuick.Controls 2.4
-import QtQuick.Dialogs  1.2
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Controllers   1.0
+import QGroundControl
+import QGroundControl.Controls
 
 SetupPage {
     id:             motorPage
@@ -28,7 +16,7 @@ SetupPage {
 
     property int neutralValue: 50;
     property int _lastIndex: 0;
-    property bool canRunManualTest: controller.vehicle.flightMode !== 'Motor Detection' && controller.vehicle.armed && motorPage.visible && setupView.visible
+    property bool canRunManualTest: controller.vehicle.flightMode !== controller.vehicle.motorDetectionFlightMode && controller.vehicle.armed && motorPage.visible && setupView.visible
     property var shouldRunManualTest: false // Does the operator intend to run the motor test?
 
     APMSubMotorComponentController {
@@ -77,7 +65,7 @@ SetupPage {
                                     id:                         slider
                                     height:                     ScreenTools.defaultFontPixelHeight * _sliderHeight
                                     orientation:                Qt.Vertical
-                                    maximumValue:               100
+                                    to:               100
                                     value:                      neutralValue
 
                                     // Give slider 'center sprung' behavior
@@ -90,15 +78,15 @@ SetupPage {
                                     // Disable mouse scroll
                                     MouseArea {
                                         anchors.fill: parent
-                                        onWheel: {
+                                        onWheel: (wheel) => {
                                             // do nothing
                                             wheel.accepted = true;
                                         }
-                                        onPressed: {
+                                        onPressed: (mouse) => {
                                             // propogate/accept
                                             mouse.accepted = false;
                                         }
-                                        onReleased: {
+                                        onReleased: (mouse) => {
                                             // propogate/accept
                                             mouse.accepted = false;
                                         }
@@ -121,7 +109,7 @@ SetupPage {
                         anchors.margins: ScreenTools.defaultFontPixelWidth * 3
                         width:              parent.width
                         height:             1
-                        color:              qgcPal.text
+                        color:              qgcPal.textPrimary
                     }
 
                     Row {
@@ -236,11 +224,11 @@ SetupPage {
 
                     QGCButton {
                         id: startAutoDetection
-                        text: "Auto-Detect Directions"
-                        enabled: controller.vehicle.flightMode !== 'Motor Detection'
+                        text: qsTr("Auto-Detect Directions")
+                        enabled: controller.vehicle.flightMode !== controller.vehicle.motorDetectionFlightMode
 
                         onClicked: function() {
-                            controller.vehicle.flightMode = "Motor Detection"
+                            controller.vehicle.flightMode = controller.vehicle.motorDetectionFlightMode
                             controller.vehicle.armed = true
                         }
                     }
@@ -259,7 +247,7 @@ SetupPage {
                         TextArea {
                             id: textArea
                             anchors.fill: parent
-                            color:  qgcPal.text
+                            color:  qgcPal.textPrimary
                             text: controller.motorDetectionMessages
                             wrapMode: Text.WordWrap
                             background: Rectangle {
@@ -306,4 +294,4 @@ SetupPage {
             }
         } // Column
     } // Component
-} // SetupPahe
+} // SetupPage

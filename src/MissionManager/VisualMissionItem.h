@@ -1,43 +1,34 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #pragma once
 
-#include <QObject>
-#include <QString>
-#include <QtQml>
-#include <QTextStream>
-#include <QJsonObject>
-#include <QGeoCoordinate>
+#include <QtCore/QObject>
+#include <QtCore/QString>
+#include <QtPositioning/QGeoCoordinate>
+#include <QtQmlIntegration/QtQmlIntegration>
 
-#include "QGCMAVLink.h"
-#include "QGC.h"
+#include "MissionFlightStatus.h"
+#include "QGCGeoBoundingCube.h"
+#include "QGCMAVLinkTypes.h"
+#include "QGroundControlQmlGlobal.h"
 #include "QmlObjectListModel.h"
-#include "Fact.h"
-#include "QGCLoggingCategory.h"
-#include "QmlObjectListModel.h"
-#include "Vehicle.h"
-#include "MissionController.h"
 
+class FlightPathSegment;
+class MissionController;
 class MissionItem;
 class PlanMasterController;
-class MissionController;
 class TerrainAtCoordinateQuery;
+class Vehicle;
 
 // Abstract base class for all Simple and Complex visual mission objects.
 class VisualMissionItem : public QObject
 {
     Q_OBJECT
+    QML_ELEMENT
+    QML_UNCREATABLE("")
+    Q_MOC_INCLUDE("PlanMasterController.h")
 
 public:
-    VisualMissionItem(PlanMasterController* masterController, bool flyView, QObject* parent);
-    VisualMissionItem(const VisualMissionItem& other, bool flyView, QObject* parent);
+    VisualMissionItem(PlanMasterController* masterController, bool flyView);
+    VisualMissionItem(const VisualMissionItem& other, bool flyView);
 
     ~VisualMissionItem();
 
@@ -54,9 +45,11 @@ public:
     Q_PROPERTY(QGeoCoordinate   coordinate                          READ coordinate                         WRITE setCoordinate             NOTIFY coordinateChanged)                           ///< Does not include altitude
     Q_PROPERTY(double           amslEntryAlt                        READ amslEntryAlt                                                       NOTIFY amslEntryAltChanged)
     Q_PROPERTY(double           terrainAltitude                     READ terrainAltitude                                                    NOTIFY terrainAltitudeChanged)                      ///< The altitude of terrain at the coordinate position, NaN if not known
+    Q_PROPERTY(bool             terrainQueryFailed                  READ terrainQueryFailed                                                 NOTIFY terrainQueryFailedChanged)                    ///< true: Last terrain query failed
+    Q_PROPERTY(QGeoCoordinate   entryCoordinate                     READ entryCoordinate                                                    NOTIFY entryCoordinateChanged)                      ///< Does not include altitude
     Q_PROPERTY(QGeoCoordinate   exitCoordinate                      READ exitCoordinate                                                     NOTIFY exitCoordinateChanged)                       ///< Does not include altitude
     Q_PROPERTY(double           amslExitAlt                         READ amslExitAlt                                                        NOTIFY amslExitAltChanged)
-    Q_PROPERTY(bool             exitCoordinateSameAsEntry           READ exitCoordinateSameAsEntry                                          NOTIFY exitCoordinateSameAsEntryChanged)            ///< true: exitCoordinate and coordinate are the same value
+    Q_PROPERTY(bool             exitCoordinateSameAsEntry           READ exitCoordinateSameAsEntry                                          NOTIFY exitCoordinateSameAsEntryChanged)            ///< true: entryCoordinate and exitCoordinate are the same value
     Q_PROPERTY(QString          commandDescription                  READ commandDescription                                                 NOTIFY commandDescriptionChanged)
     Q_PROPERTY(QString          commandName                         READ commandName                                                        NOTIFY commandNameChanged)
     Q_PROPERTY(QString          abbreviation                        READ abbreviation                                                       NOTIFY abbreviationChanged)
@@ -71,8 +64,10 @@ public:
     Q_PROPERTY(bool             isSimpleItem                        READ isSimpleItem                                                       NOTIFY isSimpleItemChanged)                         ///< Simple or Complex MissionItem
     Q_PROPERTY(bool             isTakeoffItem                       READ isTakeoffItem                                                      NOTIFY isTakeoffItemChanged)                        ///< true: Takeoff item special case
     Q_PROPERTY(bool             isLandCommand                       READ isLandCommand                                                      NOTIFY isLandCommandChanged)
+    Q_PROPERTY(bool             isSurveyItem                        READ isSurveyItem                                                       )                                                   ///< true: Survey item special case for editing center position through mission item list menue
     Q_PROPERTY(QString          editorQml                           MEMBER _editorQml                                                       CONSTANT)                                           ///< Qml code for editing this item
     Q_PROPERTY(QString          mapVisualQML                        READ mapVisualQML                                                       CONSTANT)                                           ///< QMl code for map visuals
+    Q_PROPERTY(QString          geoMapVisualQML                     READ geoMapVisualQML                                                    CONSTANT)                                           ///< QGroundControl.GeoMap-native QML code for this item's visuals, empty if none
     Q_PROPERTY(double           specifiedFlightSpeed                READ specifiedFlightSpeed                                               NOTIFY specifiedFlightSpeedChanged)                 ///< NaN for not specified
     Q_PROPERTY(double           specifiedGimbalYaw                  READ specifiedGimbalYaw                                                 NOTIFY specifiedGimbalYawChanged)                   ///< NaN for not specified
     Q_PROPERTY(double           specifiedGimbalPitch                READ specifiedGimbalPitch                                               NOTIFY specifiedGimbalPitchChanged)                 ///< NaN for not specified
@@ -111,6 +106,7 @@ public:
     bool    isCurrentItem       (void) const { return _isCurrentItem; }
     bool    hasCurrentChildItem (void) const { return _hasCurrentChildItem; }
     double  terrainAltitude     (void) const { return _terrainAltitude; }
+    bool    terrainQueryFailed   (void) const { return _terrainQueryFailed; }
     bool    flyView             (void) const { return _flyView; }
     bool    wizardMode          (void) const { return _wizardMode; }
     VisualMissionItem* parentItem(void) { return _parentItem; }
@@ -143,6 +139,7 @@ public:
     virtual bool            isSimpleItem            (void) const = 0;
     virtual bool            isTakeoffItem           (void) const { return false; }
     virtual bool            isLandCommand           (void) const { return false; }
+    virtual bool            isSurveyItem            (void) const { return false; }
     virtual bool            isStandaloneCoordinate  (void) const = 0;
     virtual bool            specifiesCoordinate     (void) const = 0;
     virtual bool            specifiesAltitudeOnly   (void) const = 0;
@@ -150,7 +147,9 @@ public:
     virtual QString         commandName             (void) const = 0;
     virtual QString         abbreviation            (void) const = 0;
     virtual QGeoCoordinate  coordinate              (void) const = 0;
+    virtual QGeoCoordinate  entryCoordinate         (void) const = 0;
     virtual QGeoCoordinate  exitCoordinate          (void) const = 0;
+    virtual double          editableAlt             (void) const = 0;
     virtual double          amslEntryAlt            (void) const = 0;
     virtual double          amslExitAlt             (void) const = 0;
     virtual int             sequenceNumber          (void) const = 0;
@@ -164,7 +163,7 @@ public:
 
     /// Update item to mission flight status at point where this item appears in mission.
     /// IMPORTANT: Overrides must call base class implementation
-    virtual void setMissionFlightStatus(MissionController::MissionFlightStatus_t& missionFlightStatus);
+    virtual void setMissionFlightStatus(MissionFlightStatus_t& missionFlightStatus);
 
     virtual bool exitCoordinateSameAsEntry          (void) const = 0;
 
@@ -183,6 +182,14 @@ public:
     /// @return The QML resource file which contains the control which visualizes the item on the map.
     virtual QString mapVisualQML(void) const = 0;
 
+    /// @return The QGroundControl.GeoMap-native QML resource file which visualizes the item on
+    /// GeoMap, or an empty string if this item type has none (the default).
+    virtual QString geoMapVisualQML(void) const { return QString(); }
+
+    /// FlyView items normally skip terrain queries to save resources. Override to return true
+    /// when the item's AMSL altitude cannot be computed without the terrain height (e.g. terrain frame).
+    virtual bool terrainAltitudeRequiredInFlyView(void) const { return false; }
+
     /// Returns the mission items associated with the complex item. Caller is responsible for freeing.
     ///     @param items List to append to
     ///     @param missionItemParent Parent object for newly created MissionItems
@@ -191,6 +198,9 @@ public:
     /// Adjust the altitude of the item if appropriate to the new altitude.
     virtual void applyNewAltitude(double newAltitude) = 0;
 
+    /// @return true: The altitude set by applyNewAltitude is in the specified altitude frame
+    virtual bool usesAltitudeFrame(QGroundControlQmlGlobal::AltitudeFrame altitudeFrame) const = 0;
+
     /// @return Amount of additional time delay in seconds needed to fly this item
     virtual double additionalTimeDelay(void) const = 0;
 
@@ -198,9 +208,9 @@ public:
     double  missionVehicleYaw   (void) const { return _missionVehicleYaw; }
     void    setMissionVehicleYaw(double vehicleYaw);
 
-    static const char* jsonTypeKey;                 ///< Json file attribute which specifies the item type
-    static const char* jsonTypeSimpleItemValue;     ///< Item type is MISSION_ITEM
-    static const char* jsonTypeComplexItemValue;    ///< Item type is Complex Item
+    static constexpr const char* jsonTypeKey =                "type"; ///< Json file attribute which specifies the item type
+    static constexpr const char* jsonTypeSimpleItemValue =    "SimpleItem"; ///< Item type is MISSION_ITEM
+    static constexpr const char* jsonTypeComplexItemValue =   "ComplexItem"; ///< Item type is Complex Item
 
 signals:
     void altDifferenceChanged           (double altDifference);
@@ -212,6 +222,7 @@ signals:
     void commandNameChanged             (void);
     void abbreviationChanged            (void);
     void coordinateChanged              (const QGeoCoordinate& coordinate);
+    void entryCoordinateChanged         (const QGeoCoordinate& entryCoordinate);
     void exitCoordinateChanged          (const QGeoCoordinate& exitCoordinate);
     void dirtyChanged                   (bool dirty);
     void distanceChanged                (double distance);
@@ -233,6 +244,7 @@ signals:
     void missionGimbalYawChanged        (double missionGimbalYaw);
     void missionVehicleYawChanged       (double missionVehicleYaw);
     void terrainAltitudeChanged         (double terrainAltitude);
+    void terrainQueryFailedChanged       (bool terrainQueryFailed);
     void additionalTimeDelayChanged     (void);
     void boundingCubeChanged            (void);
     void readyForSaveStateChanged       (void);
@@ -257,6 +269,7 @@ protected:
     bool                        _homePositionSpecialCase    = false;                            ///< true: This item is being used as a ui home position indicator
     bool                        _wizardMode                 = false;                            ///< true: Item editor is showing wizard completion panel
     double                      _terrainAltitude            = qQNaN();                          ///< Altitude of terrain at coordinate position, NaN for not known
+    bool                        _terrainQueryFailed         = false;                            ///< true: Last terrain query failed
     double                      _altDifference              = 0;                                ///< Difference in altitude from previous waypoint
     double                      _altPercent                 = 0;                                ///< Percent of total altitude change in mission
     double                      _terrainPercent             = qQNaN();                          ///< Percent of terrain altitude for coordinate
@@ -267,7 +280,7 @@ protected:
     QString                     _editorQml;                                                     ///< Qml resource for editing item
     double                      _missionGimbalYaw           = qQNaN();
     double                      _missionVehicleYaw          = qQNaN();
-    QGCMAVLink::VehicleClass_t  _previousVTOLMode           = QGCMAVLink::VehicleClassGeneric;  ///< Generic == unknown
+    QGCMAVLinkTypes::VehicleClass_t  _previousVTOLMode           = QGCMAVLinkTypes::VehicleClassGeneric;  ///< Generic == unknown
 
     PlanMasterController*   _masterController           = nullptr;
     MissionController*      _missionController          = nullptr;

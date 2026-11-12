@@ -21,7 +21,8 @@
 },
 {
     "name":             "SplitConcavePolygons",
-    "shortDesc": "Split mission concave polygons into separate regular, convex polygons.",
+    "shortDesc": "Split transects at concave polygon boundaries.",
+    "longDesc": "Transects which cross a concave gap are split into separate segments. The vehicle still flies straight across the gap. Images are only stopped over the gap when images in turnarounds is disabled.",
     "type":             "bool",
     "default":     false
 }

@@ -1,31 +1,18 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "ComplexMissionItem.h"
-#include "QGCApplication.h"
+#include "AppMessages.h"
 #include "QGCCorePlugin.h"
 #include "QGCOptions.h"
 #include "PlanMasterController.h"
 #include "FlightPathSegment.h"
 #include "MissionController.h"
+#include "KMLPlanDomDocument.h"
+#include "SettingsManager.h"
 
-#include <QCborValue>
-#include <QSettings>
+#include <QtCore/QCborMap>
+#include <QtCore/QSettings>
 
-const char* ComplexMissionItem::jsonComplexItemTypeKey = "complexItemType";
-
-const char* ComplexMissionItem::_presetSettingsKey =        "_presets";
-
-ComplexMissionItem::ComplexMissionItem(PlanMasterController* masterController, bool flyView, QObject* parent)
-    : VisualMissionItem (masterController, flyView, parent)
-    , _toolbox          (qgcApp()->toolbox())
-    , _settingsManager  (_toolbox->settingsManager())
+ComplexMissionItem::ComplexMissionItem(PlanMasterController* masterController, bool flyView)
+    : VisualMissionItem (masterController, flyView)
 {
     connect(_missionController, &MissionController::plannedHomePositionChanged,         this, &ComplexMissionItem::_amslEntryAltChanged);
     connect(_missionController, &MissionController::plannedHomePositionChanged,         this, &ComplexMissionItem::_amslExitAltChanged);
@@ -54,19 +41,19 @@ QStringList ComplexMissionItem::presetNames(void)
 void ComplexMissionItem::loadPreset(const QString& name)
 {
     Q_UNUSED(name);
-    qgcApp()->showAppMessage(tr("This Pattern does not support Presets."));
+    QGC::showAppMessage(tr("This Pattern does not support Presets."));
 }
 
 void ComplexMissionItem::savePreset(const QString& name)
 {
     Q_UNUSED(name);
-    qgcApp()->showAppMessage(tr("This Pattern does not support Presets."));
+    QGC::showAppMessage(tr("This Pattern does not support Presets."));
 }
 
 void ComplexMissionItem::deletePreset(const QString& name)
 {
-    if (qgcApp()->toolbox()->corePlugin()->options()->surveyBuiltInPresetNames().contains(name)) {
-        qgcApp()->showAppMessage(tr("'%1' is a built-in preset which cannot be deleted.").arg(name));
+    if (QGCCorePlugin::instance()->options()->surveyBuiltInPresetNames().contains(name)) {
+        QGC::showAppMessage(tr("'%1' is a built-in preset which cannot be deleted.").arg(name));
         return;
     }
 
@@ -82,16 +69,12 @@ void ComplexMissionItem::_savePresetJson(const QString& name, QJsonObject& prese
     QSettings settings;
     settings.beginGroup(presetsSettingsGroup());
     settings.beginGroup(_presetSettingsKey);
-#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
-    settings.setValue(name, QJsonDocument(presetObject).toBinaryData());
-#else
     settings.setValue(name, QCborMap::fromJsonObject(presetObject).toCborValue().toVariant());
-#endif
 
     // Use this to save a survey preset as a JSON file to be included in the build
     // as a built-in survey preset that cannot be deleted.
     #if 0
-    QString savePath = _settingsManager->appSettings()->missionSavePath();
+    QString savePath = SettingsManager::instance()->appSettings()->missionSavePath();
     QDir saveDir(savePath);
 
     QString fileName = saveDir.absoluteFilePath(name);
@@ -115,11 +98,7 @@ QJsonObject ComplexMissionItem::_loadPresetJson(const QString& name)
     QSettings settings;
     settings.beginGroup(presetsSettingsGroup());
     settings.beginGroup(_presetSettingsKey);
-#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
-    return QJsonDocument::fromBinaryData(settings.value(name).toByteArray()).object();
-#else
     return QCborValue::fromVariant(settings.value(name)).toMap().toJsonObject();
-#endif
 }
 
 void ComplexMissionItem::addKMLVisuals(KMLPlanDomDocument& /* domDocument */)
@@ -156,4 +135,3 @@ void ComplexMissionItem::_segmentTerrainCollisionChanged(bool terrainCollision)
     }
     emit terrainCollisionChanged(_cTerrainCollisionSegments != 0);
 }
-

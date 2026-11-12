@@ -1,30 +1,21 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
 
-import QtQuick              2.3
-import QtQuick.Controls     2.2
-import QtGraphicalEffects   1.0
-
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Palette       1.0
+import QGroundControl
+import QGroundControl.Controls
 
 Button {
     id:             control
+    objectName:     toolStripAction ? toolStripAction.objectName : ""
     width:          contentLayoutItem.contentWidth + (contentMargins * 2)
     height:         width
-    hoverEnabled:   true
-    enabled:        toolStripAction.enabled
-    visible:        toolStripAction.visible
-    imageSource:    toolStripAction.showAlternateIcon ? modelData.alternateIconSource : modelData.iconSource
-    text:           toolStripAction.text
-    checked:        toolStripAction.checked
-    checkable:      toolStripAction.dropPanelComponent || modelData.checkable
+    hoverEnabled:   !ScreenTools.isMobile
+    enabled:        toolStripAction ? toolStripAction.enabled : true
+    visible:        toolStripAction ? toolStripAction.visible : true
+    imageSource:    (toolStripAction && modelData) ? (toolStripAction.showAlternateIcon ? modelData.alternateIconSource : modelData.iconSource) : ""
+    text:           toolStripAction ? toolStripAction.text : ""
+    checked:        toolStripAction ? toolStripAction.checked : false
+    checkable:      toolStripAction ? (toolStripAction.dropPanelComponent || (modelData && modelData.checkable)) : false
 
     property var    toolStripAction:    undefined
     property var    dropPanel:          undefined
@@ -33,24 +24,30 @@ Button {
     property alias  imageSource:        innerImage.source
     property alias  contentWidth:       innerText.contentWidth
 
-    property real imageScale:       0.6
-    property real contentMargins:   innerText.height * 0.1
+    property bool forceImageScale11: false
+    property real imageScale:        forceImageScale11 && (text == "") ? 0.8 : 0.6
+    property real contentMargins:    innerText.height * 0.1
 
-    property color _currentContentColor:  (checked || pressed) ? qgcPal.buttonHighlightText : qgcPal.buttonText
+    property color _currentContentColor:  (checked || pressed) ? qgcPal.accentText : qgcPal.textPrimary
+    property color _currentContentColorSecondary:  (checked || pressed) ? qgcPal.textPrimary : qgcPal.accent
 
     signal dropped(int index)
 
-    onCheckedChanged: toolStripAction.checked = checked
+    onCheckedChanged: { if (toolStripAction) toolStripAction.checked = checked }
 
     onClicked: {
-        dropPanel.hide()
-        if (!toolStripAction.dropPanelComponent) {
-            toolStripAction.triggered(this)
-        } else if (checked) {
-            var panelEdgeTopPoint = mapToItem(_root, width, 0)
-            dropPanel.show(panelEdgeTopPoint, toolStripAction.dropPanelComponent, this)
-            checked = true
-            control.dropped(index)
+        if (mainWindow.allowViewSwitch()) {
+            dropPanel.hide()
+            if (!toolStripAction.dropPanelComponent) {
+                toolStripAction.triggered(this)
+            } else if (checked) {
+                var panelEdgeTopPoint = mapToItem(_root, width, 0)
+                dropPanel.show(panelEdgeTopPoint, toolStripAction.dropPanelComponent, this)
+                checked = true
+                control.dropped(index)
+            }
+        } else if (checkable) {
+            checked = !checked
         }
     }
 
@@ -63,7 +60,22 @@ Button {
 
         Column {
             anchors.centerIn:   parent
-            spacing:        contentMargins * 2
+            spacing:            0
+
+            Image {
+                id:                         innerImageColorful
+                height:                     contentLayoutItem.height * imageScale
+                width:                      contentLayoutItem.width  * imageScale
+                smooth:                     true
+                mipmap:                     true
+                fillMode:                   Image.PreserveAspectFit
+                antialiasing:               true
+                sourceSize.height:          height
+                sourceSize.width:           width
+                anchors.horizontalCenter:   parent.horizontalCenter
+                source:                     control.imageSource
+                visible:                    source != "" && !!modelData && modelData.fullColorIcon
+            }
 
             QGCColoredImage {
                 id:                         innerImage
@@ -77,6 +89,23 @@ Button {
                 sourceSize.height:          height
                 sourceSize.width:           width
                 anchors.horizontalCenter:   parent.horizontalCenter
+                visible:                    source != "" && !(modelData && modelData.fullColorIcon)
+
+                QGCColoredImage {
+                    id:                         innerImageSecondColor
+                    source:                     modelData ? modelData.alternateIconSource : ""
+                    height:                     contentLayoutItem.height * imageScale
+                    width:                      contentLayoutItem.width  * imageScale
+                    smooth:                     true
+                    mipmap:                     true
+                    color:                      _currentContentColorSecondary
+                    fillMode:                   Image.PreserveAspectFit
+                    antialiasing:               true
+                    sourceSize.height:          height
+                    sourceSize.width:           width
+                    anchors.horizontalCenter:   parent.horizontalCenter
+                    visible:                    source != "" && !!modelData && modelData.biColorIcon
+                }
             }
 
             QGCLabel {
@@ -84,15 +113,16 @@ Button {
                 text:                       control.text
                 color:                      _currentContentColor
                 anchors.horizontalCenter:   parent.horizontalCenter
+                font.bold:                  !innerImage.visible && !innerImageColorful.visible
+                opacity:                    !innerImage.visible ? 0.8 : 1.0
             }
         }
     }
 
     background: Rectangle {
-        id:             buttonBkRect
-        color:          (control.checked || control.pressed) ?
-                            qgcPal.buttonHighlight :
-                            (control.hovered ? qgcPal.toolStripHoverColor : qgcPal.toolbarBackground)
-        anchors.fill:   parent
+        id:     buttonBkRect
+        color:  (control.checked || control.pressed) ?
+                    qgcPal.accent :
+                    ((control.enabled && control.hovered) ? qgcPal.toolStripHoverColor : "transparent")
     }
 }

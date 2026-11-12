@@ -1,17 +1,8 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtPositioning
 
-import QtQuick          2.3
-import QtPositioning    5.3
-
-import QGroundControl           1.0
-import QGroundControl.FlightMap 1.0
+import QGroundControl
+import QGroundControl.FlightMap
 
 /// Set of functions for fitting the map view to a specific constraint
 Item {

@@ -1,22 +1,9 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
 
-import QtQuick          2.12
-import QtQuick.Layouts  1.2
-import QtQuick.Controls 2.5
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.Templates     1.0
-import QGroundControl.Templates     1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Palette       1.0
+import QGroundControl
+import QGroundControl.Controls
 
 ColumnLayout {
     property var    instrumentValueData:            null
@@ -38,13 +25,14 @@ ColumnLayout {
         id:                 label
         Layout.alignment:   Qt.AlignVCenter
         font.pointSize:     _fontSize
+        color:              instrumentValueData.isValidColor(instrumentValueData.currentColor) ? instrumentValueData.currentColor : qgcPal.textPrimary
         text:               valueText()
 
         function valueText() {
             if (instrumentValueData.fact) {
                 return instrumentValueData.fact.enumOrValueString + (instrumentValueData.showUnits ? " " + instrumentValueData.fact.units : "")
             } else {
-                return qsTr("--.--")
+                return qsTr("–")
             }
         }
     }

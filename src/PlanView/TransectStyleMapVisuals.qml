@@ -1,22 +1,11 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtLocation
+import QtPositioning
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-import QtLocation       5.3
-import QtPositioning    5.3
-
-import QGroundControl               1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FlightMap     1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FlightMap
 
 /// Base control for both Survey and Corridor Scan map visuals
 Item {
@@ -25,15 +14,24 @@ Item {
     property var    map                                                 ///< Map control to place item in
     property bool   polygonInteractive: true
     property bool   interactive: true
+    property var    vehicle
+    property bool   hideMapPolygon: false
+    property real   polygonBorderWidth: 1
 
     property var    _missionItem:               object
     property var    _mapPolygon:                object.surveyAreaPolygon
     property bool   _currentItem:               object.isCurrentItem
+    property bool   _vertexDrag:                _mapPolygon.vertexDrag || hideMapPolygon
     property var    _transectPoints:            _missionItem.visualTransectPoints
-    property int    _transectCount:             _transectPoints.length / (_hasTurnaround ? 4 : 2)
+    property var    _entryIndices:              _missionItem.visualTransectEntryIndices
+    property var    _exitIndices:               _missionItem.visualTransectExitIndices
+    // Items loaded from a plan file have no transect structure until rebuilt, so fall back to a fixed point stride
+    property bool   _hasTransectIndices:        _entryIndices.length > 0 && _entryIndices.length === _exitIndices.length
+    property int    _transectStride:            _hasTurnaround ? 4 : 2
+    property int    _transectCount:             _hasTransectIndices ? _entryIndices.length : _transectPoints.length / _transectStride
     property bool   _hasTurnaround:             _missionItem.turnAroundDistance.rawValue !== 0
-    property int    _firstTrueTransectIndex:    _hasTurnaround ? 1 : 0
-    property int    _lastTrueTransectIndex:     _transectPoints.length - (_hasTurnaround ? 2 : 1)
+    property int    _firstTrueTransectIndex:    _hasTransectIndices ? _entryIndices[0] : (_hasTurnaround ? 1 : 0)
+    property int    _lastTrueTransectIndex:     _hasTransectIndices ? _exitIndices[_exitIndices.length - 1] : _transectPoints.length - (_hasTurnaround ? 2 : 1)
     property int    _lastPointIndex:            _transectPoints.length - 1
     property bool   _showPartialEntryExit:      !_currentItem && _hasTurnaround &&_transectPoints.length >= 2
     property var    _fullTransectsComponent:    null
@@ -72,11 +70,12 @@ Item {
         mapControl:         map
         mapPolygon:         _mapPolygon
         interactive:        polygonInteractive && _missionItem.isCurrentItem && _root.interactive
-        borderWidth:        1
+        borderWidth:        polygonBorderWidth
         borderColor:        "black"
         interiorColor:      QGroundControl.globalPalette.surveyPolygonInterior
         altColor:           QGroundControl.globalPalette.surveyPolygonTerrainCollision
         interiorOpacity:    0.5 * _root.opacity
+        visible:            !hideMapPolygon
     }
 
     // Full set of transects lines. Shown when item is selected.
@@ -87,7 +86,7 @@ Item {
             line.color: "white"
             line.width: 2
             path:       _transectPoints
-            visible:    _currentItem
+            visible:    _currentItem && !_vertexDrag
             opacity:    _root.opacity
         }
     }
@@ -100,7 +99,7 @@ Item {
             line.color: "white"
             line.width: 2
             path:       _showPartialEntryExit ? [ _transectPoints[0], _transectPoints[1] ] : []
-            visible:    _showPartialEntryExit
+            visible:    _showPartialEntryExit && !_vertexDrag
             opacity:    _root.opacity
         }
     }
@@ -111,7 +110,7 @@ Item {
             line.color: "white"
             line.width: 2
             path:       _showPartialEntryExit ? [ _transectPoints[_lastPointIndex - 1], _transectPoints[_lastPointIndex] ] : []
-            visible:    _showPartialEntryExit
+            visible:    _showPartialEntryExit && !_vertexDrag
             opacity:    _root.opacity
         }
     }
@@ -125,7 +124,7 @@ Item {
             anchorPoint.y:  sourceItem.anchorPointY
             z:              QGroundControl.zOrderMapItems
             coordinate:     _missionItem.coordinate
-            visible:        _missionItem.exitCoordinate.isValid
+            visible:        _missionItem.exitCoordinate.isValid && !_vertexDrag
             opacity:        _root.opacity
 
             sourceItem: MissionItemIndexLabel {
@@ -143,7 +142,8 @@ Item {
             fromCoord:      _transectPoints[_firstTrueTransectIndex]
             toCoord:        _transectPoints[_firstTrueTransectIndex + 1]
             arrowPosition:  1
-            visible:        _currentItem
+            mapControl:     _root.map
+            visible:        _currentItem && !_vertexDrag
             opacity:        _root.opacity
         }
     }
@@ -155,10 +155,11 @@ Item {
             fromCoord:      _transectPoints[nextTrueTransectIndex]
             toCoord:        _transectPoints[nextTrueTransectIndex + 1]
             arrowPosition:  1
-            visible:        _currentItem && _transectCount > 3
+            mapControl:     _root.map
+            visible:        _currentItem && _transectCount > 3 && !_vertexDrag
             opacity:        _root.opacity
 
-            property int nextTrueTransectIndex: _firstTrueTransectIndex + (_hasTurnaround ? 4 : 2)
+            property int nextTrueTransectIndex: _hasTransectIndices ? _entryIndices[Math.min(1, _entryIndices.length - 1)] : _firstTrueTransectIndex + _transectStride
         }
     }
 
@@ -169,7 +170,8 @@ Item {
             fromCoord:      _transectPoints[_lastTrueTransectIndex - 1]
             toCoord:        _transectPoints[_lastTrueTransectIndex]
             arrowPosition:  3
-            visible:        _currentItem
+            mapControl:     _root.map
+            visible:        _currentItem && !_vertexDrag
             opacity:        _root.opacity
         }
     }
@@ -181,10 +183,11 @@ Item {
             fromCoord:      _transectPoints[prevTrueTransectIndex - 1]
             toCoord:        _transectPoints[prevTrueTransectIndex]
             arrowPosition:  13
-            visible:        _currentItem && _transectCount > 3
+            mapControl:     _root.map
+            visible:        _currentItem && _transectCount > 3 && !_vertexDrag
             opacity:        _root.opacity
 
-            property int prevTrueTransectIndex: _lastTrueTransectIndex - (_hasTurnaround ? 4 : 2)
+            property int prevTrueTransectIndex: _hasTransectIndices ? _exitIndices[Math.max(0, _exitIndices.length - 2)] : _lastTrueTransectIndex - _transectStride
         }
     }
 
@@ -197,7 +200,7 @@ Item {
             anchorPoint.y:  sourceItem.anchorPointY
             z:              QGroundControl.zOrderMapItems
             coordinate:     _missionItem.exitCoordinate
-            visible:        _missionItem.exitCoordinate.isValid
+            visible:        _missionItem.exitCoordinate.isValid && !_vertexDrag
             opacity:        _root.opacity
 
             sourceItem: MissionItemIndexLabel {

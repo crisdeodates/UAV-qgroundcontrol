@@ -1,29 +1,51 @@
-import QtQuick                      2.3
-import QtQuick.Controls             1.2
-import QtQuick.Layouts              1.2
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QGroundControl               1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 ColumnLayout {
-    anchors.left:   parent.left
-    anchors.right:  parent.right
-    spacing:        _margin
-    visible:        tabBar.currentIndex === 2
+    spacing: _margin
 
-    property var    missionItem
+    property var missionItem
 
-    QGCCheckBox {
-        id:         followsTerrainCheckBox
-        text:       qsTr("Vehicle follows terrain")
-        checked:    missionItem.followTerrain
-        onClicked:  missionItem.followTerrain = checked
+    MouseArea {
+        Layout.preferredWidth:  childrenRect.width
+        Layout.preferredHeight: childrenRect.height
 
-        Binding on checkedState {
-            value: missionItem.followTerrain ? Qt.Checked : Qt.Unchecked
+        onClicked: {
+            var removeModes = []
+            var updateFunction = function(altFrame){ missionItem.cameraCalc.distanceMode = altFrame }
+            removeModes.push(QGroundControl.AltitudeFrameMixed)
+            if (!missionItem.masterController.controllerVehicle.supports.terrainFrame) {
+                removeModes.push(QGroundControl.AltitudeFrameTerrain)
+            }
+            if (!QGroundControl.corePlugin.options.showMissionAbsoluteAltitude || !missionItem.cameraCalc.isManualCamera) {
+                removeModes.push(QGroundControl.AltitudeFrameAbsolute)
+            }
+            altFrameDialogFactory.open({ currentAltFrame: missionItem.cameraCalc.distanceMode, rgRemoveModes: removeModes, updateAltFrameFn: updateFunction })
+        }
+
+        QGCPopupDialogFactory {
+            id: altFrameDialogFactory
+
+            dialogComponent: altFrameDialogComponent
+        }
+
+        Component { id: altFrameDialogComponent; AltFrameDialog { } }
+
+        RowLayout {
+            spacing: ScreenTools.defaultFontPixelWidth / 2
+
+            QGCLabel { text: QGroundControl.altitudeFrameShortDescription(missionItem.cameraCalc.distanceMode) }
+            QGCColoredImage {
+                height:     ScreenTools.defaultFontPixelHeight / 2
+                width:      height
+                source:     "/res/DropArrow.svg"
+                color:      qgcPal.textPrimary
+            }
         }
     }
 
@@ -32,7 +54,7 @@ ColumnLayout {
         columnSpacing:      _margin
         rowSpacing:         _margin
         columns:            2
-        enabled:            followsTerrainCheckBox.checked
+        enabled:            missionItem.cameraCalc.distanceMode === QGroundControl.AltitudeFrameCalcAboveTerrain
 
         QGCLabel { text: qsTr("Tolerance") }
         FactTextField {

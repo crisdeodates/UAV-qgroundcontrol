@@ -1,43 +1,35 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
-
-#ifndef RCChannelMonitorController_H
-#define RCChannelMonitorController_H
-
-#include <QTimer>
+#pragma once
 
 #include "FactPanelController.h"
-#include "UASInterface.h"
-#include "QGCLoggingCategory.h"
-#include "AutoPilotPlugin.h"
+
+#include <QtQmlIntegration/QtQmlIntegration>
 
 class RCChannelMonitorController : public FactPanelController
 {
     Q_OBJECT
+    QML_ELEMENT
+    Q_PROPERTY(int channelCount READ channelCount NOTIFY channelCountChanged)
+    Q_PROPERTY(bool clampValues READ clampValues WRITE setClampValues NOTIFY clampValuesChanged)
 
 public:
-    RCChannelMonitorController(void);
+    explicit RCChannelMonitorController(QObject *parent = nullptr);
+    ~RCChannelMonitorController();
 
-    Q_PROPERTY(int channelCount READ channelCount NOTIFY channelCountChanged)
-
-    int channelCount(void) const{ return _chanCount; }
+    int channelCount() const { return _chanCount; }
+    bool clampValues() const { return _clampValues; }
+    void setClampValues(bool clamp);
 
 signals:
     void channelCountChanged(int channelCount);
-    void channelRCValueChanged(int channel, int rcValue);
+    void channelValueChanged(int channel, int rcValue);
+    void clampValuesChanged();
 
 private slots:
-    void _rcChannelsChanged(int channelCount, int pwmValues[Vehicle::cMaxRcChannels]);
+    void channelValuesChanged(QVector<int> pwmValues);
 
 private:
-    int _chanCount;
-};
+    void _connectToSignal();
 
-#endif // RCChannelMonitorController_H
+    int _chanCount = 0;
+    bool _clampValues = true;
+};

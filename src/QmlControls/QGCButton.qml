@@ -1,76 +1,95 @@
-import QtQuick                  2.3
-import QtQuick.Controls         2.12
-import QtQuick.Controls.Styles  1.4
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QGroundControl.Palette 1.0
-import QGroundControl.ScreenTools 1.0
+import QGroundControl
+import QGroundControl.Controls
 
+/// Standard push button control:
+///     If there is both an icon and text the icon will be to the left of the text
+///     If icon only, icon will be centered
 Button {
-    id:             control
-    hoverEnabled:   true
-    topPadding:     _verticalPadding
-    bottomPadding:  _verticalPadding
-    leftPadding:    _horizontalPadding
-    rightPadding:   _horizontalPadding
-    focusPolicy:    Qt.ClickFocus
+    property bool primary: false
+    property bool showBorder: true
+    property real backRadius: ScreenTools.defaultBorderRadius
+    property real heightFactor: small ? 0.2 : 0.3
+    property string iconSource: ""
+    property real fontWeight: Font.Normal // default for qml Text
+    property real pointSize: small ? ScreenTools.smallFontPointSize : ScreenTools.defaultFontPointSize
 
-    property bool   primary:        false                               ///< primary button for a group of buttons
-    property real   pointSize:      ScreenTools.defaultFontPointSize    ///< Point size for button text
-    property bool   showBorder:     qgcPal.globalTheme === QGCPalette.Light
-    property bool   iconLeft:       false
-    property real   backRadius:     0
-    property real   heightFactor:   0.5
-    property string iconSource
+    /// Compact variant for secondary actions in dense areas (indicator drop-downs, list headers).
+    /// Only changes the defaults of heightFactor, pointSize and horizontal padding and drops the minimum button height
+    /// (the minimum width still applies); each default can still be overridden explicitly.
+    property bool small: false
 
-    property bool   _showHighlight:     pressed | hovered | checked
+    property alias wrapMode: text.wrapMode
+    property alias horizontalAlignment: text.horizontalAlignment
+    property color backgroundColor: primary ? qgcPal.accent : qgcPal.windowCard
+    property alias textColor: text.color
 
-    property int _horizontalPadding:    ScreenTools.defaultFontPixelWidth
-    property int _verticalPadding:      Math.round(ScreenTools.defaultFontPixelHeight * heightFactor)
+    id: control
+    hoverEnabled: !ScreenTools.isMobile
+    topPadding: _verticalPadding
+    bottomPadding: _verticalPadding
+    leftPadding: _horizontalPadding
+    rightPadding: _horizontalPadding
+    focusPolicy: Qt.ClickFocus
+    font.family: ScreenTools.normalFontFamily
+    text: ""
 
-    QGCPalette { id: qgcPal; colorGroupEnabled: enabled }
+    property bool _showHighlight: enabled && (pressed || checked)
+    property int _horizontalPadding: ScreenTools.defaultFontPixelWidth * (small ? 1 : 2)
+    property int _textVerticalPadding: Math.round(ScreenTools.defaultFontPixelHeight * heightFactor)
+    property real _textOnlyHeight: Math.max(small ? 0 : ScreenTools.implicitButtonHeight, text.implicitHeight + _textVerticalPadding * 2)
+    property real _iconHeight: Math.round(_textOnlyHeight * 0.75)
+    property int _verticalPadding: iconSource === "" ? _textVerticalPadding : Math.max(0, Math.round((_textOnlyHeight - _iconHeight) / 2))
+    // Solid fills (primary or a caller supplied backgroundColor) keep their color and show state with an overlay instead
+    property bool _solidFill: primary || !Qt.colorEqual(backgroundColor, qgcPal.windowCard)
+
+    QGCPalette { id: qgcPal; colorGroupEnabled: control.enabled }
 
     background: Rectangle {
-        id:             backRect
-        implicitWidth:  ScreenTools.implicitButtonWidth
-        implicitHeight: ScreenTools.implicitButtonHeight
-        radius:         backRadius
-        border.width:   showBorder ? 1 : 0
-        border.color:   qgcPal.buttonText
-        color:          _showHighlight ?
-                            qgcPal.buttonHighlight :
-                            (primary ? qgcPal.primaryButton : qgcPal.button)
+        id: backRect
+        radius: backRadius
+        implicitWidth: ScreenTools.implicitButtonWidth
+        implicitHeight: control.small ? control.implicitContentHeight + control.topPadding + control.bottomPadding : ScreenTools.implicitButtonHeight
+        border.width: showBorder ? 1 : 0
+        border.color: primary || _showHighlight || (control.enabled && control.hovered) ? qgcPal.accent : qgcPal.borderSubtle
+        color: !control._solidFill && control._showHighlight ? qgcPal.accentSubtle : control.backgroundColor
+
+        Rectangle {
+            anchors.fill: parent
+            radius: parent.radius
+            color: qgcPal.accentText
+            visible: control._solidFill
+            opacity: control._showHighlight ? 0.25 : (control.enabled && control.hovered ? 0.12 : 0)
+        }
     }
 
-    contentItem: Item {
-        implicitWidth:  text.implicitWidth + icon.width
-        implicitHeight: text.implicitHeight
-        baselineOffset: text.y + text.baselineOffset
+    contentItem: RowLayout {
+        spacing: ScreenTools.defaultFontPixelWidth
 
         QGCColoredImage {
-            id:                     icon
-            source:                 control.iconSource
-            height:                 source === "" ? 0 : text.height
-            width:                  height
-            color:                  text.color
-            fillMode:               Image.PreserveAspectFit
-            sourceSize.height:      height
-            anchors.left:           control.iconLeft ? parent.left : undefined
-            anchors.leftMargin:     control.iconLeft ? ScreenTools.defaultFontPixelWidth : undefined
-            anchors.right:          !control.iconLeft ? parent.right : undefined
-            anchors.rightMargin:    !control.iconLeft ? ScreenTools.defaultFontPixelWidth : undefined
-            anchors.verticalCenter: parent.verticalCenter
+            id: icon
+            Layout.alignment: Qt.AlignHCenter
+            source: control.iconSource
+            height: _iconHeight
+            width: height
+            color: text.color
+            fillMode: Image.PreserveAspectFit
+            sourceSize.height: height
+            visible: control.iconSource !== ""
         }
 
-        Text {
-            id:                     text
-            anchors.centerIn:       parent
-            antialiasing:           true
-            text:                   control.text
-            font.pointSize:         pointSize
-            font.family:            ScreenTools.normalFontFamily
-            color:                  _showHighlight ?
-                                        qgcPal.buttonHighlightText :
-                                        (primary ? qgcPal.primaryButtonText : qgcPal.buttonText)
+        QGCLabel {
+            id: text
+            Layout.alignment: Qt.AlignHCenter
+            text: control.text
+            font.pointSize: control.pointSize
+            font.family: control.font.family
+            font.weight: fontWeight
+            color: primary ? qgcPal.accentText : qgcPal.textPrimary
+            visible: control.text !== ""
         }
     }
 }

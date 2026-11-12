@@ -1,34 +1,19 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
+import QtQuick.Dialogs
 
-import QtQuick          2.12
-import QtQuick.Layouts  1.2
-import QtQuick.Controls 2.5
-import QtQuick.Dialogs  1.3
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.Controllers   1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 QGCPopupDialog {
+    title:      qsTr("RC To Param")
+    buttons:    Dialog.Cancel | Dialog.Ok
+
     property alias tuningFact: controller.tuningFact
 
-    title:      qsTr("RC To Param")
-    buttons:    StandardButton.Cancel | StandardButton.Ok
-
-    function accept() {
-        QGroundControl.multiVehicleManager.activeVehicle.sendParamMapRC(tuningFact.name, scale.text, centerValue.text, tuningID.currentIndex, minValue.text, maxValue.text);
-        hideDialog()
-    }
+    onAccepted: QGroundControl.multiVehicleManager.activeVehicle.sendParamMapRC(tuningFact.name, scale.text, centerValue.text, tuningID.currentIndex, minValue.text, maxValue.text)
 
     RCToParamDialogController {
         id: controller

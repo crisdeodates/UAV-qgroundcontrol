@@ -1,69 +1,100 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "ADSBVehicle.h"
+#include "QGCMath.h"
 #include "QGCLoggingCategory.h"
-#include "QGC.h"
 
-#include <QDebug>
-#include <QtMath>
+#include <QtCore/QtNumeric>
 
-ADSBVehicle::ADSBVehicle(const VehicleInfo_t& vehicleInfo, QObject* parent)
-    : QObject       (parent)
-    , _icaoAddress  (vehicleInfo.icaoAddress)
-    , _altitude     (qQNaN())
-    , _heading      (qQNaN())
-    , _alert        (false)
+QGC_LOGGING_CATEGORY(ADSBVehicleLog, "ADSB.ADSBVehicle")
+
+ADSBVehicle::ADSBVehicle(const ADSB::VehicleInfo_t &vehicleInfo, QObject *parent)
+    : QObject(parent)
 {
+    // qCDebug(ADSBVehicleLog) << Q_FUNC_INFO << this;
+
+    _info.icaoAddress = vehicleInfo.icaoAddress;
     update(vehicleInfo);
 }
 
-void ADSBVehicle::update(const VehicleInfo_t& vehicleInfo)
+ADSBVehicle::~ADSBVehicle()
 {
-    if (_icaoAddress != vehicleInfo.icaoAddress) {
-        qCWarning(ADSBVehicleManagerLog) << "ICAO address mismatch expected:actual" << _icaoAddress << vehicleInfo.icaoAddress;
+    // qCDebug(ADSBVehicleLog) << Q_FUNC_INFO << this;
+}
+
+void ADSBVehicle::update(const ADSB::VehicleInfo_t &vehicleInfo)
+{
+    if (vehicleInfo.icaoAddress != icaoAddress()) {
+        qCWarning(ADSBVehicleLog) << "ICAO address mismatch expected:" << icaoAddress() << "actual:" << vehicleInfo.icaoAddress;
         return;
     }
-    if (vehicleInfo.availableFlags & CallsignAvailable) {
-        if (vehicleInfo.callsign != _callsign) {
-            _callsign = vehicleInfo.callsign;
-            emit callsignChanged();
-        }
+
+    qCDebug(ADSBVehicleLog) << "Updating" << QStringLiteral("%1 Flags: %2").arg(vehicleInfo.icaoAddress, 0, 16).arg(vehicleInfo.availableFlags.toInt(), 0, 2);
+
+    // Keep-alive for expiration tracking. This must be updated even for throttled updates.
+    _lastUpdateTimer.start();
+
+    // Throttle the property update rate to prevent overloading the ui with map item updates. Skipped info will be
+    // picked up by a later update since ADS-B data is continuously re-transmitted. Alert transitions bypass the
+    // throttle since the collision warning must not be delayed.
+    const bool alertChange = (vehicleInfo.availableFlags & ADSB::AlertAvailable) && (vehicleInfo.alert != alert());
+    if (!alertChange && _lastPropertyUpdateTimer.isValid() && !_lastPropertyUpdateTimer.hasExpired(_propertyUpdateMinIntervalMs)) {
+        return;
     }
-    if (vehicleInfo.availableFlags & LocationAvailable) {
-        if (_coordinate != vehicleInfo.location) {
-            _coordinate = vehicleInfo.location;
+    _lastPropertyUpdateTimer.start();
+
+    if (vehicleInfo.availableFlags & ADSB::LocationAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.location.latitude(), coordinate().latitude()) || !QGC::fuzzyCompare(vehicleInfo.location.longitude(), coordinate().longitude())) {
+            _info.location.setLatitude(vehicleInfo.location.latitude());
+            _info.location.setLongitude(vehicleInfo.location.longitude());
             emit coordinateChanged();
         }
     }
-    if (vehicleInfo.availableFlags & AltitudeAvailable) {
-        if (!QGC::fuzzyCompare(vehicleInfo.altitude, _altitude)) {
-            _altitude = vehicleInfo.altitude;
+
+    if (vehicleInfo.availableFlags & ADSB::AltitudeAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.location.altitude(), altitude())) {
+            _info.location.setAltitude(vehicleInfo.location.altitude());
             emit altitudeChanged();
         }
     }
-    if (vehicleInfo.availableFlags & HeadingAvailable) {
-        if (!QGC::fuzzyCompare(vehicleInfo.heading, _heading)) {
-            _heading = vehicleInfo.heading;
+
+    if (vehicleInfo.availableFlags & ADSB::HeadingAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.heading, heading())) {
+            _info.heading = vehicleInfo.heading;
             emit headingChanged();
         }
     }
-    if (vehicleInfo.availableFlags & AlertAvailable) {
-        if (vehicleInfo.alert != _alert) {
-            _alert = vehicleInfo.alert;
+
+    if (vehicleInfo.availableFlags & ADSB::VelocityAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.velocity, velocity())) {
+            _info.velocity = vehicleInfo.velocity;
+            emit velocityChanged();
+        }
+    }
+
+    if (vehicleInfo.availableFlags & ADSB::CallsignAvailable) {
+        if (vehicleInfo.callsign != callsign()) {
+            _info.callsign = vehicleInfo.callsign;
+            emit callsignChanged();
+        }
+    }
+
+    if (vehicleInfo.availableFlags & ADSB::SquawkAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.velocity, squawk())) {
+            _info.squawk = vehicleInfo.squawk;
+            emit squawkChanged();
+        }
+    }
+
+    if (vehicleInfo.availableFlags & ADSB::VerticalVelAvailable) {
+        if (!QGC::fuzzyCompare(vehicleInfo.verticalVel, verticalVel())) {
+            _info.verticalVel = vehicleInfo.verticalVel;
+            emit verticalVelChanged();
+        }
+    }
+
+    if (vehicleInfo.availableFlags & ADSB::AlertAvailable) {
+        if (vehicleInfo.alert != alert()) {
+            _info.alert = vehicleInfo.alert;
             emit alertChanged();
         }
     }
-    _lastUpdateTimer.restart();
-}
-
-bool ADSBVehicle::expired()
-{
-    return _lastUpdateTimer.hasExpired(expirationTimeoutMs);
 }

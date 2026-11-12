@@ -1,34 +1,21 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Dialogs
+import QtQuick.Layouts
+import QtQuick.Controls
 
-import QtQuick          2.12
-import QtQuick.Dialogs  1.3
-import QtQuick.Layouts  1.2
-import QtQuick.Controls 2.5
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.Controllers   1.0
-import QGroundControl.Palette       1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 QGCPopupDialog {
     id:         root
-    title:      qsTr("Value Display")
-    buttons:    StandardButton.Close
+    title:      qsTr("Telemetry Display")
+    buttons:    Dialog.Close
 
-    property var instrumentValueData: dialogProperties.instrumentValueData
+    property var instrumentValueData
 
-    QGCPalette { id: qgcPal;            colorGroupEnabled: parent.enabled }
-    QGCPalette { id: qgcPalDisabled;    colorGroupEnabled: false }
+    QGCPalette { id: qgcPal;        colorGroupEnabled: parent.enabled }
+    QGCPalette { id: qgcPalDisable; colorGroupEnabled: false }
 
     Loader {
         sourceComponent: instrumentValueData.fact ? editorComponent : noFactComponent
@@ -45,166 +32,213 @@ QGCPopupDialog {
     Component {
         id: editorComponent
 
-        GridLayout {
-            rowSpacing:     _margins
-            columnSpacing:  _margins
-            columns:        2
+        RowLayout {
+            spacing: ScreenTools.defaultFontPixelWidth
 
-            QGCComboBox {
-                id:                     factGroupCombo
-                Layout.fillWidth:       true
-                model:                  instrumentValueData.factGroupNames
-                sizeToContents:         true
-                Component.onCompleted:  currentIndex = find(instrumentValueData.factGroupName)
-                onActivated: {
-                    instrumentValueData.setFact(currentText, "")
-                    instrumentValueData.icon = ""
-                    instrumentValueData.text = instrumentValueData.fact.shortDescription
-                }
-                Connections {
-                    target: instrumentValueData
-                    onFactGroupNameChanged: factGroupCombo.currentIndex = factGroupCombo.find(instrumentValueData.factGroupName)
-                }
-            }
+            ColumnLayout {
+                spacing: ScreenTools.defaultFontPixelHeight / 2
 
-            QGCComboBox {
-                id:                     factNamesCombo
-                Layout.fillWidth:       true
-                model:                  instrumentValueData.factValueNames
-                sizeToContents:         true
-                Component.onCompleted:  currentIndex = find(instrumentValueData.factName)
-                onActivated: {
-                    instrumentValueData.setFact(instrumentValueData.factGroupName, currentText)
-                    instrumentValueData.icon = ""
-                    instrumentValueData.text = instrumentValueData.fact.shortDescription
-                }
-                Connections {
-                    target: instrumentValueData
-                    onFactNameChanged: factNamesCombo.currentIndex = factNamesCombo.find(instrumentValueData.factName)
-                }
-            }
+                QGCGroupBox {
+                    heading: qsTr("Telemetry")
 
-            QGCRadioButton {
-                id:                     iconRadio
-                text:                   qsTr("Icon")
-                Component.onCompleted:  checked = instrumentValueData.icon != ""
-                onClicked: {
-                    instrumentValueData.text = ""
-                    instrumentValueData.icon = instrumentValueData.factValueGrid.iconNames[0]
-                    var updateFunction = function(icon){ instrumentValueData.icon = icon }
-                    mainWindow.showPopupDialogFromComponent(iconPickerDialog, { iconNames: instrumentValueData.factValueGrid.iconNames, icon: instrumentValueData.icon, updateIconFunction: updateFunction })
-                }
-            }
+                    LabelledComboBox {
+                        id:                     factGroupCombo
+                        label:                  qsTr("Group")
+                        model:                  instrumentValueData.factGroupNames
+                        currentIndex:           instrumentValueData.factGroupNames.indexOf(instrumentValueData.factGroupName)
+                        onActivated: (index) => {
+                            instrumentValueData.setFact(currentText, "")
+                            instrumentValueData.icon = ""
+                            instrumentValueData.text = instrumentValueData.fact.shortDescription
+                        }
+                        Connections {
+                            target: instrumentValueData
+                            onFactGroupNameChanged: factGroupCombo.currentIndex = factGroupCombo.comboBox.find(instrumentValueData.factGroupName)
+                        }
+                    }
 
-            QGCColoredImage {
-                id:                 valueIcon
-                Layout.alignment:   Qt.AlignHCenter
-                height:             ScreenTools.implicitComboBoxHeight
-                width:              height
-                source:             "/InstrumentValueIcons/" + (instrumentValueData.icon ? instrumentValueData.icon : instrumentValueData.factValueGrid.iconNames[0])
-                sourceSize.height:  height
-                fillMode:           Image.PreserveAspectFit
-                mipmap:             true
-                smooth:             true
-                color:              enabled ? qgcPal.text : qgcPalDisabled.text
-                enabled:            iconRadio.checked
-
-                MouseArea {
-                    anchors.fill:   parent
-                    onClicked: {
-                        var updateFunction = function(icon){ instrumentValueData.icon = icon }
-                        mainWindow.showPopupDialogFromComponent(iconPickerDialog, { iconNames: instrumentValueData.factValueGrid.iconNames, icon: instrumentValueData.icon, updateIconFunction: updateFunction })
+                    LabelledComboBox {
+                        id:                     factNamesCombo
+                        label:                  qsTr("Value")
+                        model:                  instrumentValueData.factValueNames
+                        currentIndex:           instrumentValueData.factValueNames.indexOf(instrumentValueData.factName)
+                        onActivated: (index) => {
+                            instrumentValueData.setFact(instrumentValueData.factGroupName, currentText)
+                            instrumentValueData.icon = ""
+                            instrumentValueData.text = instrumentValueData.fact.shortDescription
+                        }
+                        Connections {
+                            target: instrumentValueData
+                            onFactNameChanged: factNamesCombo.currentIndex = factNamesCombo.comboBox.find(instrumentValueData.factName)
+                        }
                     }
                 }
 
-                Rectangle {
-                    anchors.fill:   valueIcon
-                    color:          qgcPal.text
-                    visible:        valueIcon.status === Image.Error
-                }
-            }
+                QGCGroupBox {
+                    heading: qsTr("Label")
 
-            QGCRadioButton {
-                id:                     textRadio
-                text:                   qsTr("Text")
-                Component.onCompleted:  checked = instrumentValueData.icon == ""
-                onClicked: {
-                    instrumentValueData.icon = ""
-                    instrumentValueData.text = instrumentValueData.fact ? instrumentValueData.fact.shortDescription : qsTr("Label")
-                }
-            }
+                    ColumnLayout {
+                        Layout.fillWidth:   true
+                        spacing:            ScreenTools.defaultFontPixelHeight / 2
 
-            QGCTextField {
-                id:                     labelTextField
-                Layout.fillWidth:       true
-                Layout.preferredWidth:  ScreenTools.defaultFontPixelWidth * 10
-                text:                   instrumentValueData.text
-                enabled:                textRadio.checked
-                onEditingFinished:      instrumentValueData.text = text
-            }
+                        RowLayout {
+                            Layout.fillWidth:  true
 
-            QGCLabel { text: qsTr("Size") }
+                            QGCRadioButton {
+                                id:                     iconRadio
+                                text:                   qsTr("Icon")
+                                Layout.fillWidth:       true
+                                Component.onCompleted:  checked = instrumentValueData.icon != ""
+                                onClicked: {
+                                    instrumentValueData.text = ""
+                                    instrumentValueData.icon = instrumentValueData.factValueGrid.iconNames[0]
+                                }
+                                ButtonGroup.group:      labelTypeGroup
+                                ButtonGroup { id: labelTypeGroup }
+                            }
 
-            QGCComboBox {
-                id:                 fontSizeCombo
-                Layout.fillWidth:   true
-                model:              instrumentValueData.factValueGrid.fontSizeNames
-                currentIndex:       instrumentValueData.factValueGrid.fontSize
-                sizeToContents:     true
-                onActivated:        instrumentValueData.factValueGrid.fontSize = index
-            }
+                            RowLayout {
+                                id:         iconOptionInputs
+                                Rectangle {
+                                    width:      height
+                                    height:     changeIconBtn.height
+                                    color:      qgcPal.windowCard
+                                    opacity:    iconRadio.checked ? 1 : .3
 
-            QGCCheckBox {
-                Layout.columnSpan:  2
-                text:               qsTr("Show Units")
-                checked:            instrumentValueData.showUnits
-                onClicked:          instrumentValueData.showUnits = checked
-            }
+                                    QGCColoredImage {
+                                        id:                 valueIcon
+                                        anchors.centerIn:   parent
+                                        height:             ScreenTools.defaultFontPixelHeight
+                                        width:              height
+                                        source:             "/InstrumentValueIcons/" + (instrumentValueData.icon ? instrumentValueData.icon : instrumentValueData.factValueGrid.iconNames[0])
+                                        sourceSize.height:  height
+                                        fillMode:           Image.PreserveAspectFit
+                                        mipmap:             true
+                                        smooth:             true
+                                        color:              valueIcon.status === Image.Error ? "red" : qgcPal.textPrimary
+                                    }
+                                }
+                                QGCButton {
+                                    id:         changeIconBtn
+                                    text:       qsTr("Change")
+                                    enabled:    iconRadio.checked
+                                    onClicked: {
+                                        var updateFunction = function(icon){ instrumentValueData.icon = icon }
+                                        iconPickerDialogFactory.open({ iconNames: instrumentValueData.factValueGrid.iconNames, icon: instrumentValueData.icon, updateIconFunction: updateFunction })
+                                    }
+                                }
+                            }
+                        }
 
-            QGCLabel { text: qsTr("Range") }
+                        RowLayout {
+                            Layout.fillWidth: true
 
-            QGCComboBox {
-                id:                 rangeTypeCombo
-                Layout.fillWidth:   true
-                model:              instrumentValueData.rangeTypeNames
-                currentIndex:       instrumentValueData.rangeType
-                sizeToContents:     true
-                onActivated:        instrumentValueData.rangeType = index
-            }
+                            QGCRadioButton {
+                                id:                     textRadio
+                                text:                   qsTr("Text")
+                                Layout.fillWidth:       true
+                                ButtonGroup.group:      labelTypeGroup
+                                Component.onCompleted:  checked = instrumentValueData.icon == ""
+                                onClicked: {
+                                    instrumentValueData.icon = ""
+                                    instrumentValueData.text = instrumentValueData.fact ? instrumentValueData.fact.shortDescription : qsTr("Label")
+                                }
+                            }
 
-            Loader {
-                id:                     rangeLoader
-                Layout.columnSpan:      2
-                Layout.fillWidth:       true
-                Layout.preferredWidth:  item ? item.width : 0
-                Layout.preferredHeight: item ? item.height : 0
+                            QGCTextField {
+                                enabled:                textRadio.checked
+                                Layout.minimumWidth:    iconOptionInputs.width
+                                text:                   textRadio.checked
+                                                            ? instrumentValueData.text
+                                                            : instrumentValueData.fact ? instrumentValueData.fact.shortDescription : qsTr("Label")
+                                onEditingFinished:      instrumentValueData.text = text
+                            }
+                        }
+                    }
 
-                property var instrumentValueData: root.instrumentValueData
+                    LabelledComboBox {
+                        label:          qsTr("Size")
+                        model:          instrumentValueData.factValueGrid.fontSizeNames
+                        currentIndex:   instrumentValueData.factValueGrid.fontSize
+                        onActivated:    (index) => { instrumentValueData.factValueGrid.fontSize = index }
+                    }
 
-                function updateSourceComponent() {
-                    switch (instrumentValueData.rangeType) {
-                    case InstrumentValueData.NoRangeInfo:
-                        sourceComponent = undefined
-                        break
-                    case InstrumentValueData.ColorRange:
-                        sourceComponent = colorRangeDialog
-                        break
-                    case InstrumentValueData.OpacityRange:
-                        sourceComponent = opacityRangeDialog
-                        break
-                    case InstrumentValueData.IconSelvalueedectRange:
-                        sourceComponent = iconRangeDialog
-                        break
+                    QGCCheckBoxSlider {
+                        Layout.fillWidth: true
+                        text:       qsTr("Show Units")
+                        checked:    instrumentValueData.showUnits
+                        onClicked:  instrumentValueData.showUnits = checked
                     }
                 }
+            }
 
-                Component.onCompleted: updateSourceComponent()
+            QGCGroupBox {
+                Layout.alignment:   Qt.AlignTop
+                heading:            qsTr("Value range")
 
-                Connections {
-                    target:             instrumentValueData
-                    onRangeTypeChanged: rangeLoader.updateSourceComponent()
+                ColumnLayout {
+                    Layout.fillWidth: true
+
+                    RowLayout {
+                        Layout.fillWidth:   true
+                        spacing:            ScreenTools.defaultFontPixelWidth * 2
+
+                        QGCLabel {
+                            Layout.fillWidth:       true
+                            text:                   qsTr("Type")
+                        }
+
+                        QGCComboBox {
+                            id:                 rangeTypeCombo
+                            model:              instrumentValueData.rangeTypeNames
+                            currentIndex:       instrumentValueData.rangeType
+                            sizeToContents:     true
+                            onActivated: (index) => { instrumentValueData.rangeType = index }
+                        }
+                    }
+
+                    Loader {
+                        id:                     rangeLoader
+                        visible:                sourceComponent
+                        Layout.columnSpan:      2
+                        Layout.alignment:       Qt.AlignHCenter
+                        Layout.margins:         ScreenTools.defaultFontPixelWidth
+                        Layout.preferredWidth:  item ? item.width : 0
+                        Layout.preferredHeight: item ? item.height : 0
+
+                        property var instrumentValueData: root.instrumentValueData
+
+                        function updateSourceComponent() {
+                            switch (instrumentValueData.rangeType) {
+                            case InstrumentValueData.NoRangeInfo:
+                                sourceComponent = undefined
+                                break
+                            case InstrumentValueData.ColorRange:
+                                sourceComponent = colorRangeDialog
+                                break
+                            case InstrumentValueData.OpacityRange:
+                                sourceComponent = opacityRangeDialog
+                                break
+                            case InstrumentValueData.IconSelectRange:
+                                sourceComponent = iconRangeDialog
+                                break
+                            }
+                        }
+
+                        Component.onCompleted: {
+                            updateSourceComponent()
+                            if (sourceComponent) {
+                                height = item.childrenRect.height
+                                width = item.childrenRect.width
+                            }
+                        }
+
+                        Connections {
+                            target:             instrumentValueData
+                            onRangeTypeChanged: rangeLoader.updateSourceComponent()
+                        }
+                    }
                 }
-
             }
         }
     }
@@ -231,8 +265,8 @@ QGCPopupDialog {
             ColorDialog {
                 id:             colorPickerDialog
                 modality:       Qt.ApplicationModal
-                currentColor:   instrumentValueData.rangeColors.length ? instrumentValueData.rangeColors[colorIndex] : "white"
-                onAccepted:     updateColorValue(colorIndex, color)
+                selectedColor:  instrumentValueData.rangeColors.length ? instrumentValueData.rangeColors[colorIndex] : "white"
+                onAccepted:     updateColorValue(colorIndex, selectedColor)
 
                 property int colorIndex: 0
             }
@@ -258,11 +292,17 @@ QGCPopupDialog {
                         Repeater {
                             model: instrumentValueData.rangeValues.length
 
-                            QGCButton {
+                            QGCColoredImage {
                                 width:      ScreenTools.implicitTextFieldHeight
                                 height:     width
-                                text:       qsTr("-")
-                                onClicked:  instrumentValueData.removeRangeValue(index)
+                                fillMode:   Image.PreserveAspectFit
+                                color:      QGroundControl.globalPalette.textPrimary
+                                source:     "/res/TrashDelete.svg"
+
+                                QGCMouseArea {
+                                    fillItem:   parent
+                                    onClicked:  instrumentValueData.removeRangeValue(index)
+                                }
                             }
                         }
                     }
@@ -302,8 +342,8 @@ QGCPopupDialog {
                             Rectangle {
                                 width:          ScreenTools.implicitTextFieldHeight
                                 height:         width
-                                border.color:   qgcPal.text
-                                color:          instrumentValueData.isValidColor(modelData) ? modelData : qgcPal.text
+                                border.color:   qgcPal.textPrimary
+                                color:          instrumentValueData.isValidColor(modelData) ? modelData : qgcPal.textPrimary
 
                                 MouseArea {
                                     anchors.fill: parent
@@ -329,7 +369,7 @@ QGCPopupDialog {
         id: iconRangeDialog
 
         Item {
-            width:  childrenRect.widthvalueed
+            width:  childrenRect.width
             height: childrenRect.height
 
             function updateRangeValue(index, text) {
@@ -365,11 +405,17 @@ QGCPopupDialog {
                         Repeater {
                             model: instrumentValueData.rangeValues.length
 
-                            QGCButton {
+                            QGCColoredImage {
                                 width:      ScreenTools.implicitTextFieldHeight
                                 height:     width
-                                text:       qsTr("-")
-                                onClicked:  instrumentValueData.removeRangeValue(index)
+                                fillMode:   Image.PreserveAspectFit
+                                color:      QGroundControl.globalPalette.textPrimary
+                                source:     "/res/TrashDelete.svg"
+
+                                QGCMouseArea {
+                                    fillItem:   parent
+                                    onClicked:  instrumentValueData.removeRangeValue(index)
+                                }
                             }
                         }
                     }
@@ -402,13 +448,13 @@ QGCPopupDialog {
                                 fillMode:           Image.PreserveAspectFit
                                 mipmap:             true
                                 smooth:             true
-                                color:              qgcPal.text
+                                color:              qgcPal.textPrimary
 
                                 MouseArea {
                                     anchors.fill:   parent
                                     onClicked: {
                                         var updateFunction = function(icon){ updateIconValue(index, icon) }
-                                        mainWindow.showPopupDialogFromComponent(iconPickerDialog, { iconNames: instrumentValueData.factValueGrid.iconNames, icon: modelData, updateIconFunction: updateFunction })
+                                        iconPickerDialogFactory.open({ iconNames: instrumentValueData.factValueGrid.iconNames, icon: modelData, updateIconFunction: updateFunction })
                                     }
                                 }
                             }
@@ -464,11 +510,17 @@ QGCPopupDialog {
                         Repeater {
                             model: instrumentValueData.rangeValues.length
 
-                            QGCButton {
+                            QGCColoredImage {
                                 width:      ScreenTools.implicitTextFieldHeight
                                 height:     width
-                                text:       qsTr("-")
-                                onClicked:  instrumentValueData.removeRangeValue(index)
+                                fillMode:   Image.PreserveAspectFit
+                                color:      QGroundControl.globalPalette.textPrimary
+                                source:     "/res/TrashDelete.svg"
+
+                                QGCMouseArea {
+                                    fillItem:   parent
+                                    onClicked:  instrumentValueData.removeRangeValue(index)
+                                }
                             }
                         }
                     }
@@ -509,16 +561,22 @@ QGCPopupDialog {
         }
     }
 
+    QGCPopupDialogFactory {
+        id: iconPickerDialogFactory
+
+        dialogComponent: iconPickerDialog
+    }
+
     Component {
         id: iconPickerDialog
 
         QGCPopupDialog {
-            property var     iconNames:             dialogProperties.iconNames
-            property string  icon:                  dialogProperties.icon
-            property var     updateIconFunction:    dialogProperties.updateIconFunction
-
             title:      qsTr("Select Icon")
-            buttons:    StandardButton.Close
+            buttons:    Dialog.Close
+
+            property var     iconNames
+            property string  icon
+            property var     updateIconFunction
 
             GridLayout {
                 columns:        10
@@ -531,7 +589,7 @@ QGCPopupDialog {
                     Rectangle {
                         height: ScreenTools.minTouchPixels
                         width:  height
-                        color:  currentSelection ? qgcPal.text  : qgcPal.window
+                        color:  currentSelection ? qgcPal.textPrimary  : qgcPal.window
 
                         property bool currentSelection: icon == modelData
 
@@ -544,14 +602,14 @@ QGCPopupDialog {
                             fillMode:           Image.PreserveAspectFit
                             mipmap:             true
                             smooth:             true
-                            color:              currentSelection ? qgcPal.window : qgcPal.text
+                            color:              currentSelection ? qgcPal.window : qgcPal.textPrimary
 
                             MouseArea {
                                 anchors.fill:   parent
                                 onClicked:  {
                                     icon = modelData
                                     updateIconFunction(modelData)
-                                    hideDialog()
+                                    close()
                                 }
                             }
                         }

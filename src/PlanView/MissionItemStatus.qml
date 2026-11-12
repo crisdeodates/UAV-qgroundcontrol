@@ -1,22 +1,10 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-import QtQuick.Layouts  1.2
-
-import QGroundControl               1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 Rectangle {
     id:         root
@@ -87,7 +75,7 @@ Rectangle {
                 anchors.horizontalCenter:   parent.horizontalCenter
                 width:                      indicator.width
                 height:                     _terrainAvailable ? Math.max(availableHeight * _terrainPercent, 1) : parent.height
-                color:                      _terrainAvailable ? (object.terrainCollision ? "red": qgcPal.text) : "yellow"
+                color:                      _terrainAvailable ? (object.terrainCollision ? "red": qgcPal.textPrimary) : "yellow"
                 visible:                    _coordValid
             }
 
@@ -98,7 +86,7 @@ Rectangle {
                 small:                      true
                 checked:                    object.isCurrentItem
                 label:                      object.abbreviation.charAt(0)
-                index:                      object.abbreviation.charAt(0) > 'A' && object.abbreviation.charAt(0) < 'z' ? -1 : object.sequenceNumber
+                index:                      object.abbreviation !== "" ? -1 : object.sequenceNumber
                 showSequenceNumbers:        false
             }
 

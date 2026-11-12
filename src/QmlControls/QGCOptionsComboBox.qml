@@ -1,25 +1,15 @@
-/****************************************************************************
- *
- * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- * @file
- *   @author Gus Grubba <gus@auterion.com>
- */
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QtQuick                      2.11
-import QtQuick.Controls             2.4
-import QtQuick.Layouts              1.11
-
-import QGroundControl.Controls      1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.ScreenTools   1.0
+import QGroundControl
+import QGroundControl.Controls
 
 ComboBox {
     id:         control
     padding:    ScreenTools.comboBoxPadding
+    topPadding:     ScreenTools.controlVerticalPadding
+    bottomPadding:  ScreenTools.controlVerticalPadding
 
     property string labelText:  qsTr("Options")
 
@@ -30,14 +20,15 @@ ComboBox {
     property string _flashText
     property bool   _showFlash:     false
 
-    Component.onCompleted: indicator.color = Qt.binding(function() { return _controlQGCPal.text })
+    Component.onCompleted: indicator.color = Qt.binding(function() { return _controlQGCPal.textPrimary })
 
     background: Rectangle {
         implicitWidth:                  ScreenTools.implicitComboBoxWidth
         implicitHeight:                 ScreenTools.implicitComboBoxHeight
-        color:                          _controlQGCPal.window
-        border.width:                   enabled ? 1 : 0
-        border.color:                   "#999"
+        color:                          _controlQGCPal.windowInset
+        border.width:                   1
+        border.color:                   control.enabled && (control.hovered || control.pressed || control.popup.visible) ? _controlQGCPal.accent : _controlQGCPal.borderSubtle
+        radius:                         ScreenTools.defaultBorderRadius
     }
 
     /*! Adding the Combobox list item to the theme.  */
@@ -66,16 +57,16 @@ ComboBox {
             Rectangle {
                 height:         ScreenTools.defaultFontPixelHeight
                 width:          height
-                border.color:   _itemQGCPal.buttonText
+                border.color:   _itemQGCPal.textPrimary
                 border.width:   1
-                color:          _itemQGCPal.button
+                color:          _itemQGCPal.windowCard
 
                 QGCColoredImage {
                     anchors.centerIn:   parent
                     width:              parent.width * 0.75
                     height:             width
                     source:             "/qmlimages/checkbox-check.svg"
-                    color:              _itemQGCPal.buttonText
+                    color:              _itemQGCPal.textPrimary
                     mipmap:             true
                     fillMode:           Image.PreserveAspectFit
                     sourceSize.height:  height
@@ -85,13 +76,13 @@ ComboBox {
 
             Text {
                 text:   modelData.text
-                color:  _itemQGCPal.buttonText
+                color:  _itemQGCPal.textPrimary
             }
 
         }
 
         background: Rectangle {
-            color: _controlQGCPal.button
+            color: hovered ? _controlQGCPal.windowCard : _controlQGCPal.windowPanel
         }
 
         onClicked: {
@@ -116,7 +107,7 @@ ComboBox {
             id:                         text
             anchors.verticalCenter:     parent.verticalCenter
             text:                       labelText
-            color:                      _controlQGCPal.text
+            color:                      _controlQGCPal.textPrimary
             visible:                    !_showFlash
         }
 
@@ -143,7 +134,7 @@ ComboBox {
             Rectangle {
                 height:         ScreenTools.defaultFontPixelHeight
                 width:          height
-                border.color:   _controlQGCPal.buttonText
+                border.color:   _controlQGCPal.textPrimary
                 border.width:   1
                 color:          _controlQGCPal.window
 
@@ -152,7 +143,7 @@ ComboBox {
                     width:              parent.width * 0.75
                     height:             width
                     source:             "/qmlimages/checkbox-check.svg"
-                    color:              _controlQGCPal.text
+                    color:              _controlQGCPal.textPrimary
                     mipmap:             true
                     fillMode:           Image.PreserveAspectFit
                     sourceSize.height:  height
@@ -162,7 +153,7 @@ ComboBox {
 
             Text {
                 text:   _flashText
-                color:  _controlQGCPal.buttonText
+                color:  _controlQGCPal.textPrimary
             }
 
         }

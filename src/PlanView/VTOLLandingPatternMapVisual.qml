@@ -1,23 +1,12 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtLocation
+import QtPositioning
+import QtQuick.Layouts
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-import QtLocation       5.3
-import QtPositioning    5.3
-import QtQuick.Layouts  1.11
-
-import QGroundControl               1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FlightMap     1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FlightMap
 
 Item {
     id: _root
@@ -36,7 +25,7 @@ Item {
     property var    _loiterPointObject
     property var    _landingPointObject
     property bool   _useLoiterToAlt:            _missionItem.useLoiterToAlt.rawValue
-    property real   _landingAreaBearing:            _missionItem.landingCoordinate.azimuthTo(_useLoiterToAlt ? _missionItem.loiterTangentCoordinate : _missionItem.finalApproachCoordinate)
+    property real   _landingAreaBearing:        _missionItem.landingCoordinate.azimuthTo(_missionItem.slopeStartCoordinate)
 
     function hideItemVisuals() {
         objMgr.destroyObjects()
@@ -62,7 +51,6 @@ Item {
     function showMouseArea() {
         if (!_mouseArea) {
             _mouseArea = mouseAreaComponent.createObject(map)
-            map.addMapItem(_mouseArea)
         }
     }
 
@@ -82,7 +70,7 @@ Item {
 
     function _setFlightPath() {
         if (_useLoiterToAlt) {
-            _flightPath = [ _missionItem.loiterTangentCoordinate, _missionItem.landingCoordinate ]
+            _flightPath = [ _missionItem.slopeStartCoordinate, _missionItem.landingCoordinate ]
         } else {
             _flightPath = [ _missionItem.finalApproachCoordinate, _missionItem.landingCoordinate ]
         }
@@ -147,7 +135,7 @@ Item {
         }
 
         onLandingCoordinateChanged:         _setFlightPath()
-        onLoiterTangentCoordinateChanged:   _setFlightPath()
+        onSlopeStartCoordinateChanged:      _setFlightPath()
         onFinalApproachCoordinateChanged:   _setFlightPath()
     }
 
@@ -161,7 +149,7 @@ Item {
 
             readonly property int   _decimalPlaces:             8
 
-            onClicked: {
+            onClicked: (mouse) => {
                 var coordinate = map.toCoordinate(Qt.point(mouse.x, mouse.y), false /* clipToViewPort */)
                 coordinate.latitude = coordinate.latitude.toFixed(_decimalPlaces)
                 coordinate.longitude = coordinate.longitude.toFixed(_decimalPlaces)
@@ -216,7 +204,7 @@ Item {
 
         MapPolyline {
             z:          QGroundControl.zOrderMapItems - 1   // Under item indicators
-            line.color: "#be781c"
+            line.color: QGroundControl.globalPalette.mapMissionTrajectory
             line.width: 2
             path:       _flightPath
         }

@@ -1,18 +1,8 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
 
-import QtQuick                      2.12
-import QtQuick.Controls             2.12
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.ScreenTools   1.0
+import QGroundControl
+import QGroundControl.Controls
 
 // Label control whichs pop up a flight mode change menu when clicked
 QGCLabel {
@@ -58,7 +48,12 @@ QGCLabel {
 
     Connections {
         target:                 QGroundControl.multiVehicleManager
-        onActiveVehicleChanged: _root.updateFlightModesMenu()
+        function onActiveVehicleChanged(activeVehicle) { _root.updateFlightModesMenu() }
+    }
+
+    Connections {
+        target: currentVehicle
+        function onFlightModesChanged() { _root.updateFlightModesMenu() }
     }
 
     MouseArea {

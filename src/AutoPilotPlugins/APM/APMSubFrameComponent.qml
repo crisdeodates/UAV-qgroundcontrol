@@ -1,32 +1,46 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Dialogs
+import QtQuick.Layouts
 
-
-import QtQuick              2.3
-import QtQuick.Controls     1.2
-import QtQuick.Dialogs      1.2
-
-import QGroundControl               1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Controllers   1.0
+import QGroundControl
+import QGroundControl.FactControls
+import QGroundControl.Controls
 
 SetupPage {
     id:                 subFramePage
     pageComponent:      subFramePageComponent
 
     property bool _oldFW:   globals.activeVehicle.versionCompare(3 ,5 ,2) < 0
+    property bool _hasSensibledefaults:   globals.activeVehicle.versionCompare(4 ,1 ,0) >= 0
+
+    property var frameModelSelected: undefined
 
     APMAirframeComponentController { id: controller; }
+
+    property Fact _frameConfig: controller.getParameterFact(-1, "FRAME_CONFIG")
+
+    function setFrameConfig(frameNumber) {
+        _frameConfig.value = frameNumber
+    }
+
+    function loadFrameDefaultParameters(frameName) {
+        controller.loadParameters(subFramePage.getParametersFile(frameName))
+    }
+
+    function getParametersFile(frameName) {
+        let version = "3_5"
+
+        if (globals.activeVehicle.versionCompare(4, 0, 0) >= 0) {
+            version = "4_0_0"
+        } else if (globals.activeVehicle.versionCompare(3, 5, 4) >= 0) {
+            version = "3_5_4"
+        } else if (globals.activeVehicle.versionCompare(3, 5, 2) >= 0) {
+            version = "3_5_2"
+        }
+
+        return `Sub/${frameName}-${version}.params`
+    }
 
     Component {
         id: subFramePageComponent
@@ -35,13 +49,7 @@ SetupPage {
             id:     mainColumn
             width:  availableWidth
 
-            QGCPalette { id: palette; colorGroupEnabled: true }
-
-            property Fact _frameConfig: controller.getParameterFact(-1, "FRAME_CONFIG")
-
-            function setFrameConfig(frame) {
-                _frameConfig.value = frame;
-            }
+            QGCPalette { id: qgcPal; colorGroupEnabled: true }
 
             property real _minW:        ScreenTools.defaultFontPixelWidth * 30
             property real _boxWidth:    _minW
@@ -84,12 +92,14 @@ SetupPage {
                     name: "BlueROV2/Vectored"
                     resource: "qrc:///qmlimages/Frames/Vectored.png"
                     paramValue: 1
+                    paramFileName: "bluerov2"
                 }
 
                 ListElement {
                     name: "Vectored-6DOF"
                     resource: "qrc:///qmlimages/Frames/Vectored6DOF.png"
                     paramValue: 2
+                    paramFileName: "bluerov2-heavy"
                 }
 
                 ListElement {
@@ -108,19 +118,6 @@ SetupPage {
                     name: "SimpleROV-5"
                     resource: "qrc:///qmlimages/Frames/SimpleROV-5.png"
                     paramValue: 6
-                }
-            }
-
-            Item {
-                anchors.left:   parent.left
-                anchors.right:  parent.right
-                height: defaultsButton.height
-
-                QGCButton {
-                    id: defaultsButton
-                    anchors.left: parent.left
-                    text:       qsTr("Load Vehicle Default Parameters")
-                    onClicked:  mainWindow.showComponentDialog(selectParamFileDialogComponent, qsTr("Load Vehicle Default Parameters"), mainWindow.showDialogDefaultWidth, StandardButton.Close)
                 }
             }
 
@@ -148,7 +145,7 @@ SetupPage {
                             anchors.bottom:     parent.bottom
                             anchors.left:       parent.left
                             anchors.right:      parent.right
-                            color:              subFrameModel.get(index).paramValue == _frameConfig.value ? qgcPal.buttonHighlight: qgcPal.windowShade
+                            color:              subFrameModel.get(index).paramValue == _frameConfig.value ? qgcPal.accent: qgcPal.windowCard
 
                             Image {
                                 anchors.margins:    ScreenTools.defaultFontPixelWidth
@@ -164,7 +161,17 @@ SetupPage {
 
                             MouseArea {
                                 anchors.fill: parent
-                                onClicked: setFrameConfig(subFrameModel.get(index).paramValue)
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    frameModelSelected = subFrameModel.get(index)
+                                    if (_hasSensibledefaults) {
+                                        // No need to suggest loading the default parameters.
+                                        // The firmware default should be good enough.
+                                        setFrameConfig(frameModelSelected.paramValue)
+                                        return
+                                    }
+                                    confirmFrameDialogFactory.open()
+                                }
                             }
                         }
                     }
@@ -173,64 +180,55 @@ SetupPage {
         } // Column
     } // Component
 
+    QGCPopupDialogFactory {
+        id: confirmFrameDialogFactory
+
+        dialogComponent: confirmFrameComponent
+    }
 
     Component {
-        id: selectParamFileDialogComponent
+        id: confirmFrameComponent
 
-        QGCViewDialog {
-            QGCLabel {
-                id:                 applyParamsText
-                anchors.top:        parent.top
-                anchors.left:       parent.left
-                anchors.right:      parent.right
-                anchors.margins:    _margins
-                wrapMode:           Text.WordWrap
-                text:               qsTr("Select your vehicle to load the default parameters:")
-            }
+        QGCPopupDialog {
+            id:         confirmFrameDialog
+            title:      qsTr("Frame selection")
+            buttons:    Dialog.Close
 
-            Flow {
-                function getParametersFile(frame) {
-                    const filename = frame === "heavy" ? "Sub/bluerov2-heavy" : "Sub/bluerov2"
-                    if (globals.activeVehicle.versionCompare(4 ,0 ,0) >= 0) {
-                        return filename + "-4_0_0.params"
-                    }
-                    if (globals.activeVehicle.versionCompare(3 ,5 ,4) >= 0) {
-                        return filename + "-3_5_4.params"
-                    }
-                    if (globals.activeVehicle.versionCompare(3 ,5 ,2) >= 0) {
-                        return filename + "-3_5_2.params"
-                    }
-                    return filename + "-3_5.params"
+            ColumnLayout {
+                QGCLabel {
+                    id:                 applyParamsText
+                    width:              firstButton.width
+                    wrapMode:           Text.WordWrap
+                    text:               frameModelSelected.paramFileName != undefined ?
+                                            qsTr("Would you like to load the default parameters for the frame?") :
+                                            qsTr("Would you like to set the desired frame?")
                 }
 
-                anchors.margins:    _margins
-                anchors.top:        applyParamsText.bottom
-                anchors.left:       parent.left
-                anchors.right:      parent.right
-                anchors.bottom:     parent.bottom
-                spacing :           _margins
-                layoutDirection:    Qt.Vertical;
-
                 QGCButton {
-                    width:  parent.width
-                    text:   "Blue Robotics BlueROV2"
+                    id:                 firstButton
+                    Layout.fillWidth:   true
+                    text:               qsTr("Yes, Load default parameter set for %1").arg(frameModelSelected.name)
+                    visible:            frameModelSelected.paramFileName != undefined
 
-                    onClicked : {
-                        controller.loadParameters(parent.getParametersFile())
-                        hideDialog()
+                    onClicked: {
+                        setFrameConfig(frameModelSelected.paramValue)
+                        loadFrameDefaultParameters(frameModelSelected.paramFileName)
+                        confirmFrameDialog.close()
                     }
                 }
 
                 QGCButton {
-                    width:  parent.width
-                    text:   "Blue Robotics BlueROV2 Heavy"
+                    Layout.fillWidth:   true
+                    text:               frameModelSelected.paramFileName != undefined ?
+                                            qsTr("No, set frame only") :
+                                            qsTr("Confirm frame %1").arg(frameModelSelected.name)
 
-                    onClicked : {
-                        controller.loadParameters(parent.getParametersFile("heavy"))
-                        hideDialog()
+                    onClicked: {
+                        setFrameConfig(frameModelSelected.paramValue)
+                        confirmFrameDialog.close()
                     }
                 }
             }
         }
     }
-} // SetupPage
+}

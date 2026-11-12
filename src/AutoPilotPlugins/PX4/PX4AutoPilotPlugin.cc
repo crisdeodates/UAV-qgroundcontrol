@@ -1,31 +1,24 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
-
 #include "PX4AutoPilotPlugin.h"
-#include "PX4AirframeLoader.h"
-#include "PX4AdvancedFlightModesController.h"
-#include "AirframeComponentController.h"
-#include "UAS.h"
-#include "FirmwarePlugin/PX4/PX4ParameterMetaData.h"  // FIXME: Hack
-#include "FirmwarePlugin/PX4/PX4FirmwarePlugin.h"  // FIXME: Hack
-#include "QGCApplication.h"
-#include "FlightModesComponent.h"
-#include "PX4RadioComponent.h"
-#include "PX4TuningComponent.h"
-#include "PowerComponent.h"
-#include "SafetyComponent.h"
-#include "SensorsComponent.h"
 
-/// @file
-///     @brief This is the AutoPilotPlugin implementatin for the MAV_AUTOPILOT_PX4 type.
-///     @author Don Gagne <don@thegagnes.com>
+#include <algorithm>
+
+#include "ActuatorComponent.h"
+#include "Actuators.h"
+#include "AppMessages.h"
+#include "FailureInjectionComponent.h"
+#include "FlightModesComponent.h"
+#include "PX4AirframeLoader.h"
+#include "PX4CollisionComponent.h"
+#include "PX4EscComponent.h"
+#include "PX4RadioComponent.h"
+#include "PX4ReturnLandComponent.h"
+#include "PX4TuningComponent.h"
+#include "ParameterManager.h"
+#include "QGCLoggingCategory.h"
+#include "SensorsComponent.h"
+#include "Vehicle.h"
+
+QGC_LOGGING_CATEGORY(PX4AutoPilotPluginLog, "Vehicle.Actuators.PX4AutoPilotPlugin")
 
 PX4AutoPilotPlugin::PX4AutoPilotPlugin(Vehicle* vehicle, QObject* parent)
     : AutoPilotPlugin(vehicle, parent)
@@ -33,21 +26,28 @@ PX4AutoPilotPlugin::PX4AutoPilotPlugin(Vehicle* vehicle, QObject* parent)
     , _airframeComponent(nullptr)
     , _radioComponent(nullptr)
     , _esp8266Component(nullptr)
+    , _failureInjectionComponent(nullptr)
     , _flightModesComponent(nullptr)
     , _sensorsComponent(nullptr)
-    , _safetyComponent(nullptr)
-    , _powerComponent(nullptr)
+    , _returnLandComponent(nullptr)
+    , _collisionComponent(nullptr)
+    , _failsafesComponent(nullptr)
+    , _serialPortsComponent(nullptr)
+    , _escComponent(nullptr)
+    , _batteryComponent(nullptr)
     , _motorComponent(nullptr)
+    , _actuatorComponent(nullptr)
     , _tuningComponent(nullptr)
     , _flightBehavior(nullptr)
     , _syslinkComponent(nullptr)
+    , _joystickComponent(nullptr)
 {
     if (!vehicle) {
         qWarning() << "Internal error";
         return;
     }
 
-    _airframeFacts = new PX4AirframeLoader(this, _vehicle->uas(), this);
+    _airframeFacts = new PX4AirframeLoader(this, this);
     Q_CHECK_PTR(_airframeFacts);
 
     PX4AirframeLoader::loadAirframeMetaData();
@@ -67,9 +67,11 @@ const QVariantList& PX4AutoPilotPlugin::vehicleComponents(void)
                 _airframeComponent->setupTriggerSignals();
                 _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_airframeComponent)));
 
-                _sensorsComponent = new SensorsComponent(_vehicle, this, this);
-                _sensorsComponent->setupTriggerSignals();
-                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_sensorsComponent)));
+                if (!_vehicle->hilMode()) {
+                    _sensorsComponent = new SensorsComponent(_vehicle, this, this);
+                    _sensorsComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_sensorsComponent)));
+                }
 
                 _radioComponent = new PX4RadioComponent(_vehicle, this, this);
                 _radioComponent->setupTriggerSignals();
@@ -79,33 +81,84 @@ const QVariantList& PX4AutoPilotPlugin::vehicleComponents(void)
                 _flightModesComponent->setupTriggerSignals();
                 _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_flightModesComponent)));
 
-                _powerComponent = new PowerComponent(_vehicle, this, this);
-                _powerComponent->setupTriggerSignals();
-                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_powerComponent)));
+                _escComponent = new PX4EscComponent(_vehicle, this, this);
+                _escComponent->setupTriggerSignals();
+                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_escComponent)));
 
-                _motorComponent = new MotorComponent(_vehicle, this, this);
-                _motorComponent->setupTriggerSignals();
-                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_motorComponent)));
+                if (_vehicle->parameterManager()->parameterExists(ParameterManager::defaultComponentId,
+                                                                  "BAT1_SOURCE")) {
+                    _batteryComponent = new PX4BatteryComponent(_vehicle, this, this);
+                    _batteryComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_batteryComponent)));
+                }
 
-                _safetyComponent = new SafetyComponent(_vehicle, this, this);
-                _safetyComponent->setupTriggerSignals();
-                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_safetyComponent)));
+                if (_vehicle->actuators()) {
+                    _vehicle->actuators()->init(); // At this point params are loaded, so we can init the actuators
+                }
+
+                // Decide between new Actuators page or legacy Motor page
+                bool showActuatorsPage = false;
+                if (!_vehicle->actuators()) {
+                    qCDebug(PX4AutoPilotPluginLog) << "Actuators page will NOT show because:";
+                    qCDebug(PX4AutoPilotPluginLog) << "  - Vehicle did not provide actuators metadata via component information";
+                } else if (!_vehicle->actuators()->showUi()) {
+                    qCDebug(PX4AutoPilotPluginLog) << "Actuators page will NOT show because:";
+                    if (!_vehicle->actuators()->isInitialized()) {
+                        qCDebug(PX4AutoPilotPluginLog) << "  - Actuators initialization failed:" << _vehicle->actuators()->initializationError();
+                    } else {
+                        qCDebug(PX4AutoPilotPluginLog) << "  - Condition 'show-ui-if' evaluated to false";
+                        qCDebug(PX4AutoPilotPluginLog) << "    (see 'Evaluating [show-ui-if]' log above for details)";
+                    }
+                } else {
+                    showActuatorsPage = true;
+                    qCDebug(PX4AutoPilotPluginLog) << "Actuators page WILL show (all conditions passed)";
+                }
+
+                if (showActuatorsPage) {
+                    _actuatorComponent = new ActuatorComponent(_vehicle, this, this);
+                    _actuatorComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_actuatorComponent)));
+                } else {
+                    qCDebug(PX4AutoPilotPluginLog) << "  → Using legacy Motor page instead";
+                    _motorComponent = new MotorComponent(_vehicle, this, this);
+                    _motorComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_motorComponent)));
+                }
+
+                _returnLandComponent = new PX4ReturnLandComponent(_vehicle, this, this);
+                _returnLandComponent->setupTriggerSignals();
+                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_returnLandComponent)));
+
+                if (_vehicle->parameterManager()->parameterExists(ParameterManager::defaultComponentId, "CP_DIST")) {
+                    _collisionComponent = new PX4CollisionComponent(_vehicle, this, this);
+                    _collisionComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_collisionComponent)));
+                }
+
+                _failsafesComponent = new PX4FailsafesComponent(_vehicle, this, this);
+                _failsafesComponent->setupTriggerSignals();
+                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_failsafesComponent)));
+
+                if (!PX4SerialPortsComponent::functionFacts(_vehicle->parameterManager()).isEmpty()) {
+                    _serialPortsComponent = new PX4SerialPortsComponent(_vehicle, this, this);
+                    _serialPortsComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_serialPortsComponent)));
+                }
+
+                if (_vehicle->parameterManager()->parameterExists(ParameterManager::defaultComponentId, "SYS_FAILURE_EN")) {
+                    _failureInjectionComponent = new FailureInjectionComponent(_vehicle, this, this);
+                    _failureInjectionComponent->setupTriggerSignals();
+                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_failureInjectionComponent)));
+                }
 
                 _tuningComponent = new PX4TuningComponent(_vehicle, this, this);
                 _tuningComponent->setupTriggerSignals();
                 _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_tuningComponent)));
 
-                if(_vehicle->parameterManager()->parameterExists(_vehicle->id(), "SYS_VEHICLE_RESP")) {
+                if(_vehicle->parameterManager()->parameterExists(_vehicle->compId(), "SYS_VEHICLE_RESP")) {
                     _flightBehavior = new PX4FlightBehavior(_vehicle, this, this);
                     _flightBehavior->setupTriggerSignals();
                     _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_flightBehavior)));
-                }
-
-                //-- Is there support for cameras?
-                if(_vehicle->parameterManager()->parameterExists(_vehicle->id(), "TRIG_MODE")) {
-                    _cameraComponent = new CameraComponent(_vehicle, this, this);
-                    _cameraComponent->setupTriggerSignals();
-                    _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_cameraComponent)));
                 }
 
                 //-- Is there an ESP8266 Connected?
@@ -114,11 +167,16 @@ const QVariantList& PX4AutoPilotPlugin::vehicleComponents(void)
                     _esp8266Component->setupTriggerSignals();
                     _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_esp8266Component)));
                 }
+
+                _joystickComponent = new JoystickComponent(_vehicle, this, this);
+                _joystickComponent->setupTriggerSignals();
+                _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_joystickComponent)));
+
             } else {
                 qWarning() << "Call to vehicleCompenents prior to parametersReady";
             }
 
-            if(_vehicle->parameterManager()->parameterExists(_vehicle->id(), "SLNK_RADIO_CHAN")) {
+            if(_vehicle->parameterManager()->parameterExists(_vehicle->compId(), "SLNK_RADIO_CHAN")) {
                 _syslinkComponent = new SyslinkComponent(_vehicle, this, this);
                 _syslinkComponent->setupTriggerSignals();
                 _components.append(QVariant::fromValue(static_cast<VehicleComponent*>(_syslinkComponent)));
@@ -126,6 +184,10 @@ const QVariantList& PX4AutoPilotPlugin::vehicleComponents(void)
         } else {
             qWarning() << "Internal error";
         }
+
+        std::sort(_components.begin(), _components.end(), [](const QVariant &a, const QVariant &b) {
+            return a.value<VehicleComponent*>()->name().toLower() < b.value<VehicleComponent*>()->name().toLower();
+        });
     }
 
     return _components;
@@ -137,9 +199,9 @@ void PX4AutoPilotPlugin::parametersReadyPreChecks(void)
     AutoPilotPlugin::parametersReadyPreChecks();
 
     QString hitlParam("SYS_HITL");
-    if (_vehicle->parameterManager()->parameterExists(FactSystem::defaultComponentId, hitlParam) &&
-            _vehicle->parameterManager()->getParameter(FactSystem::defaultComponentId, hitlParam)->rawValue().toBool()) {
-        qgcApp()->showAppMessage(tr("Warning: Hardware In The Loop (HITL) simulation is enabled for this vehicle."));
+    if (_vehicle->parameterManager()->parameterExists(ParameterManager::defaultComponentId, hitlParam) &&
+            _vehicle->parameterManager()->getParameter(ParameterManager::defaultComponentId, hitlParam)->rawValue().toBool()) {
+        QGC::showAppMessage(tr("Warning: Hardware In The Loop (HITL) simulation is enabled for this vehicle."));
     }
 }
 
@@ -156,19 +218,18 @@ QString PX4AutoPilotPlugin::prerequisiteSetup(VehicleComponent* component) const
                 return _airframeComponent->name();
             } else if (_radioComponent && !_radioComponent->setupComplete()) {
                 return _radioComponent->name();
-            } else if (_sensorsComponent && !_sensorsComponent->setupComplete()) {
-                return _sensorsComponent->name();
             }
         }
     } else if (qobject_cast<const PX4RadioComponent*>(component)) {
         if (_vehicle->parameterManager()->getParameter(-1, "COM_RC_IN_MODE")->rawValue().toInt() != 1) {
-            requiresAirframeCheck = true;
+            //requiresAirframeCheck = true;
         }
     } else if (qobject_cast<const PX4TuningComponent*>(component)) {
         requiresAirframeCheck = true;
-    } else if (qobject_cast<const PowerComponent*>(component)) {
+    } else if (qobject_cast<const PX4EscComponent*>(component) || qobject_cast<const PX4BatteryComponent*>(component)) {
         requiresAirframeCheck = true;
-    } else if (qobject_cast<const SafetyComponent*>(component)) {
+    } else if (qobject_cast<const PX4ReturnLandComponent*>(component) ||
+               qobject_cast<const PX4CollisionComponent*>(component)) {
         requiresAirframeCheck = true;
     } else if (qobject_cast<const SensorsComponent*>(component)) {
         requiresAirframeCheck = true;

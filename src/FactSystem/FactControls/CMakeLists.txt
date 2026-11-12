@@ -1,20 +1,32 @@
-add_library(FactControls
-    FactPanelController.cc
+target_sources(${CMAKE_PROJECT_NAME}
+    PRIVATE
+        FactPanelController.cc
+        FactPanelController.h
 )
 
-add_custom_target(FactControlsQml
-	SOURCES
-		FactPanelController.h
-		AltitudeFactTextField.qml
-		FactBitmask.qml
-		FactCheckBox.qml
-		FactComboBox.qml
-		FactLabel.qml
-		FactTextFieldGrid.qml
-		FactTextField.qml
-		FactTextFieldRow.qml
-		FactTextFieldSlider.qml
-		FactValueSlider.qml
-)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(FactControls qgc)
+qt_add_library(FactControlsModule STATIC)
+
+qt_add_qml_module(FactControlsModule
+    URI QGroundControl.FactControls
+    VERSION 1.0
+    RESOURCE_PREFIX /qml
+    QML_FILES
+        AltitudeFactTextField.qml
+        FactBitMaskCheckBoxSlider.qml
+        FactBitmask.qml
+        FactCheckBox.qml
+        FactCheckBoxSlider.qml
+        FactComboBox.qml
+        FactLabel.qml
+        FactTextField.qml
+        FactTextFieldGrid.qml
+        FactTextFieldSlider.qml
+        LabelledFactBrowse.qml
+        LabelledFactComboBox.qml
+        LabelledFactLabel.qml
+        LabelledFactIncrementer.qml
+        LabelledFactTextField.qml
+    NO_PLUGIN
+)

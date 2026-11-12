@@ -1,13 +1,13 @@
-import QtQuick                  2.12
-import QtQuick.Controls         2.12
+import QtQuick
+import QtQuick.Controls
 
-import QGroundControl.Palette       1.0
-import QGroundControl.ScreenTools   1.0
+import QGroundControl
+import QGroundControl.Controls
 
 Text {
     font.pointSize: ScreenTools.defaultFontPointSize
     font.family:    ScreenTools.normalFontFamily
-    color:          qgcPal.text
+    color:          qgcPal.textPrimary
     antialiasing:   true
 
     QGCPalette { id: qgcPal; colorGroupEnabled: enabled }

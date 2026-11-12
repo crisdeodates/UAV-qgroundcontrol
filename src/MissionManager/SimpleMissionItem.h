@@ -1,31 +1,23 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
-
-#ifndef SimpleMissionItem_H
-#define SimpleMissionItem_H
+#pragma once
 
 #include "VisualMissionItem.h"
 #include "MissionItem.h"
-#include "MissionCommandTree.h"
-#include "CameraSection.h"
-#include "SpeedSection.h"
 #include "QGroundControlQmlGlobal.h"
 
-/// A SimpleMissionItem is used to represent a single MissionItem to the ui.
+class SpeedSection;
+class CameraSection;
+
+/// \brief A SimpleMissionItem is used to represent a single MissionItem to the ui.
+///
 class SimpleMissionItem : public VisualMissionItem
 {
     Q_OBJECT
-    
+    Q_MOC_INCLUDE("SpeedSection.h")
+    Q_MOC_INCLUDE("CameraSection.h")
+
 public:
-    SimpleMissionItem(PlanMasterController* masterController, bool flyView, bool forLoad, QObject* parent);
-    SimpleMissionItem(PlanMasterController* masterController, bool flyView, const MissionItem& missionItem, QObject* parent);
+    SimpleMissionItem(PlanMasterController* masterController, bool flyView, bool forLoad);
+    SimpleMissionItem(PlanMasterController* masterController, bool flyView, const MissionItem& missionItem);
 
     ~SimpleMissionItem();
 
@@ -33,19 +25,25 @@ public:
     Q_PROPERTY(bool             friendlyEditAllowed     READ friendlyEditAllowed                                NOTIFY friendlyEditAllowedChanged)
     Q_PROPERTY(bool             rawEdit                 READ rawEdit                WRITE setRawEdit            NOTIFY rawEditChanged)              ///< true: raw item editing with all params
     Q_PROPERTY(bool             specifiesAltitude       READ specifiesAltitude                                  NOTIFY commandChanged)
-    Q_PROPERTY(Fact*            altitude                READ altitude                                           CONSTANT)                           ///< Altitude as specified by altitudeMode. Not necessarily true mission item altitude
-    Q_PROPERTY(QGroundControlQmlGlobal::AltitudeMode altitudeMode READ altitudeMode WRITE setAltitudeMode       NOTIFY altitudeModeChanged)
-    Q_PROPERTY(Fact*            amslAltAboveTerrain     READ amslAltAboveTerrain                                CONSTANT)                           ///< Actual AMSL altitude for item if altitudeMode == AltitudeAboveTerrain
+    Q_PROPERTY(Fact*            altitude                READ altitude                                           CONSTANT)                           ///< Altitude as specified by altitudeFrame. Not necessarily true mission item altitude
+    Q_PROPERTY(QGroundControlQmlGlobal::AltitudeFrame altitudeFrame READ altitudeFrame WRITE setAltitudeFrame       NOTIFY altitudeFrameChanged)
+    Q_PROPERTY(Fact*            amslAltAboveTerrain     READ amslAltAboveTerrain                                CONSTANT)                           ///< Actual AMSL altitude for item if altitudeFrame is AltitudeFrameCalcAboveTerrain or AltitudeFrameTerrain
     Q_PROPERTY(int              command                 READ command                WRITE setCommand            NOTIFY commandChanged)
+    Q_PROPERTY(bool             isLoiterItem            READ isLoiterItem                                       NOTIFY isLoiterItemChanged)
+    Q_PROPERTY(bool             showLoiterRadius        READ showLoiterRadius                                   NOTIFY showLoiterRadiusChanged)
+    Q_PROPERTY(double           loiterRadius            READ loiterRadius           WRITE setRadius             NOTIFY loiterRadiusChanged)
 
     /// Optional sections
     Q_PROPERTY(QObject*         speedSection            READ speedSection                                       NOTIFY speedSectionChanged)
     Q_PROPERTY(QObject*         cameraSection           READ cameraSection                                      NOTIFY cameraSectionChanged)
 
     // These properties are used to display the editing ui
-    Q_PROPERTY(QmlObjectListModel*  comboboxFacts   READ comboboxFacts  CONSTANT)
-    Q_PROPERTY(QmlObjectListModel*  textFieldFacts  READ textFieldFacts CONSTANT)
-    Q_PROPERTY(QmlObjectListModel*  nanFacts        READ nanFacts       CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  comboboxFacts           READ comboboxFacts           CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  comboboxFactsAdvanced   READ comboboxFactsAdvanced   CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  textFieldFacts          READ textFieldFacts          CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  textFieldFactsAdvanced  READ textFieldFactsAdvanced  CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  nanFacts                READ nanFacts                CONSTANT)
+    Q_PROPERTY(QmlObjectListModel*  nanFactsAdvanced        READ nanFactsAdvanced        CONSTANT)
 
     /// This should be called before changing the command. It is needed if the command changes
     /// from an item which does not include a coordinate to an item which requires a coordinate.
@@ -60,27 +58,35 @@ public:
     bool scanForSections(QmlObjectListModel* visualItems, int scanIndex, PlanMasterController* masterController);
 
     // Property accesors
-    
+
     QString         category            (void) const;
     int             command             (void) const { return _missionItem._commandFact.cookedValue().toInt(); }
     MAV_CMD         mavCommand          (void) const { return static_cast<MAV_CMD>(command()); }
     bool            friendlyEditAllowed (void) const;
     bool            rawEdit             (void) const;
     bool            specifiesAltitude   (void) const;
-    QGroundControlQmlGlobal::AltitudeMode altitudeMode(void) const { return _altitudeMode; }
+    QGroundControlQmlGlobal::AltitudeFrame altitudeFrame(void) const { return _altitudeFrame; }
     Fact*           altitude            (void) { return &_altitudeFact; }
     Fact*           amslAltAboveTerrain (void) { return &_amslAltAboveTerrainFact; }
+    bool            isLoiterItem        (void) const;
+    bool            showLoiterRadius    (void) const;
+    double          loiterRadius        (void) const;
+    /// Distance flown circling a MAV_CMD_NAV_LOITER_TURNS item, 0 for other commands
+    double          loiterDistance      (void) const;
 
     CameraSection*  cameraSection       (void) { return _cameraSection; }
     SpeedSection*   speedSection        (void) { return _speedSection; }
 
     QmlObjectListModel* textFieldFacts  (void) { return &_textFieldFacts; }
+    QmlObjectListModel* textFieldFactsAdvanced (void) { return &_textFieldFactsAdvanced; }
     QmlObjectListModel* nanFacts        (void) { return &_nanFacts; }
+    QmlObjectListModel* nanFactsAdvanced (void) { return &_nanFactsAdvanced; }
     QmlObjectListModel* comboboxFacts   (void) { return &_comboboxFacts; }
+    QmlObjectListModel* comboboxFactsAdvanced (void) { return &_comboboxFactsAdvanced; }
 
     void setRawEdit(bool rawEdit);
-    void setAltitudeMode(QGroundControlQmlGlobal::AltitudeMode altitudeMode);
-    
+    void setAltitudeFrame(QGroundControlQmlGlobal::AltitudeFrame altitudeFrame);
+
     void setCommandByIndex(int index);
 
     void setCommand(int command);
@@ -89,6 +95,7 @@ public:
     void setAltPercent      (double altPercent);
     void setAzimuth         (double azimuth);
     void setDistance        (double distance);
+    void setRadius          (double loiterRadius);
 
     virtual bool load(QTextStream &loadStream);
     virtual bool load(const QJsonObject& json, int sequenceNumber, QString& errorString);
@@ -103,11 +110,13 @@ public:
     bool            isLandCommand               (void) const final;
     bool            specifiesCoordinate         (void) const final;
     bool            specifiesAltitudeOnly       (void) const final;
-    QString         commandDescription          (void) const final;
-    QString         commandName                 (void) const final;
+    QString         commandDescription          (void) const override;
+    QString         commandName                 (void) const override;
     QString         abbreviation                (void) const final;
     QGeoCoordinate  coordinate                  (void) const final;
+    QGeoCoordinate  entryCoordinate             (void) const final { return coordinate(); }
     QGeoCoordinate  exitCoordinate              (void) const final { return coordinate(); }
+    double          editableAlt                 (void) const final;
     double          amslEntryAlt                (void) const final;
     double          amslExitAlt                 (void) const final { return amslEntryAlt(); }
     int             sequenceNumber              (void) const final { return _missionItem.sequenceNumber(); }
@@ -116,9 +125,12 @@ public:
     double          specifiedGimbalPitch        (void) override;
     double          specifiedVehicleYaw         (void) override;
     QString         mapVisualQML                (void) const override { return QStringLiteral("SimpleItemMapVisual.qml"); }
+    QString         geoMapVisualQML             (void) const override { return QStringLiteral("GeoMapWaypointItem.qml"); }
+    bool            terrainAltitudeRequiredInFlyView(void) const final { return _altitudeFrame == QGroundControlQmlGlobal::AltitudeFrameTerrain; }
     void            appendMissionItems          (QList<MissionItem*>& items, QObject* missionItemParent) final;
     void            applyNewAltitude            (double newAltitude) final;
-    void            setMissionFlightStatus      (MissionController::MissionFlightStatus_t& missionFlightStatus) final;
+    bool usesAltitudeFrame(QGroundControlQmlGlobal::AltitudeFrame altitudeFrame) const final;
+    void            setMissionFlightStatus      (MissionFlightStatus_t& missionFlightStatus) final;
     ReadyForSaveState readyForSaveState         (void) const final;
     double          additionalTimeDelay         (void) const final;
     bool            exitCoordinateSameAsEntry   (void) const final { return true; }
@@ -136,7 +148,11 @@ signals:
     void rawEditChanged             (bool rawEdit);
     void cameraSectionChanged       (QObject* cameraSection);
     void speedSectionChanged        (QObject* cameraSection);
-    void altitudeModeChanged        (void);
+    void altitudeFrameChanged        (void);
+    void isLoiterItemChanged        (void);
+    void showLoiterRadiusChanged    (void);
+    void loiterRadiusChanged        (double loiterRadius);
+    void loiterDistanceChanged(void);
 
 private slots:
     void _setDirty                              (void);
@@ -145,7 +161,7 @@ private slots:
     void _sendCoordinateChanged                 (void);
     void _sendFriendlyEditAllowedChanged        (void);
     void _altitudeChanged                       (void);
-    void _altitudeModeChanged                   (void);
+    void _altitudeFrameChanged                   (void);
     void _terrainAltChanged                     (void);
     void _updateLastSequenceNumber              (void);
     void _rebuildFacts                          (void);
@@ -154,6 +170,8 @@ private slots:
     void _setDefaultsForCommand                 (void);
     void _possibleVehicleYawChanged             (void);
     void _signalIfVTOLTransitionCommand         (void);
+    void _possibleRadiusChanged                 (void);
+    void _possibleLoiterDistanceChanged(void);
 
 private:
     void _connectSignals        (void);
@@ -170,19 +188,21 @@ private:
     SpeedSection*   _speedSection =             nullptr;
     CameraSection*  _cameraSection =             nullptr;
 
-    MissionCommandTree* _commandTree = nullptr;
     bool _syncingHeadingDegreesAndParam4 = false;   ///< true: already in a sync signal, prevents signal loop
 
     Fact                _supportedCommandFact;
 
-    QGroundControlQmlGlobal::AltitudeMode   _altitudeMode = QGroundControlQmlGlobal::AltitudeModeRelative;
-    Fact                                    _altitudeFact;
-    Fact                                    _amslAltAboveTerrainFact;
+    QGroundControlQmlGlobal::AltitudeFrame    _altitudeFrame = QGroundControlQmlGlobal::AltitudeFrameRelative;
+    Fact                                _altitudeFact;
+    Fact                                _amslAltAboveTerrainFact;
 
     QmlObjectListModel  _textFieldFacts;
+    QmlObjectListModel  _textFieldFactsAdvanced;
     QmlObjectListModel  _nanFacts;
+    QmlObjectListModel  _nanFactsAdvanced;
     QmlObjectListModel  _comboboxFacts;
-    
+    QmlObjectListModel  _comboboxFactsAdvanced;
+
     static FactMetaData*    _altitudeMetaData;
     static FactMetaData*    _commandMetaData;
     static FactMetaData*    _defaultParamMetaData;
@@ -198,9 +218,27 @@ private:
     FactMetaData    _param6MetaData;
     FactMetaData    _param7MetaData;
 
-    static const char* _jsonAltitudeModeKey;
-    static const char* _jsonAltitudeKey;
-    static const char* _jsonAMSLAltAboveTerrainKey;
-};
+    static constexpr const char* _jsonAltitudeModeKey =           "AltitudeMode";
+    static constexpr const char* _jsonAltitudeKey =               "Altitude";
+    static constexpr const char* _jsonAMSLAltAboveTerrainKey =    "AMSLAltAboveTerrain";
 
-#endif
+    struct EnumInfo_s {
+        const char *    label;
+        MAV_FRAME       frame;
+    };
+
+    static constexpr const struct EnumInfo_s _rgMavFrameInfo[] = {
+        { "MAV_FRAME_GLOBAL",                   MAV_FRAME_GLOBAL },
+        { "MAV_FRAME_LOCAL_NED",                MAV_FRAME_LOCAL_NED },
+        { "MAV_FRAME_MISSION",                  MAV_FRAME_MISSION },
+        { "MAV_FRAME_GLOBAL_RELATIVE_ALT",      MAV_FRAME_GLOBAL_RELATIVE_ALT },
+        { "MAV_FRAME_LOCAL_ENU",                MAV_FRAME_LOCAL_ENU },
+        { "MAV_FRAME_GLOBAL_INT",               MAV_FRAME_GLOBAL_INT },
+        { "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT",  MAV_FRAME_GLOBAL_RELATIVE_ALT_INT },
+        { "MAV_FRAME_LOCAL_OFFSET_NED",         MAV_FRAME_LOCAL_OFFSET_NED },
+        { "MAV_FRAME_BODY_NED",                 MAV_FRAME_BODY_NED },
+        { "MAV_FRAME_BODY_OFFSET_NED",          MAV_FRAME_BODY_OFFSET_NED },
+        { "MAV_FRAME_GLOBAL_TERRAIN_ALT",       MAV_FRAME_GLOBAL_TERRAIN_ALT },
+        { "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT",   MAV_FRAME_GLOBAL_TERRAIN_ALT_INT },
+    };
+};

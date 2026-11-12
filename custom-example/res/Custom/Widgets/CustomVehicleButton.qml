@@ -1,20 +1,7 @@
-/****************************************************************************
- *
- * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- * @file
- *   @author Gus Grubba <gus@auterion.com>
- */
+import QtQuick
+import QtQuick.Controls
 
-import QtQuick                      2.11
-import QtQuick.Controls             2.4
-
-import QGroundControl.Controls      1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.ScreenTools   1.0
+import QGroundControl.Controls
 
 Button {
     id:                             button
@@ -47,7 +34,7 @@ Button {
 
     background: Rectangle {
         anchors.fill:               parent
-        color:                      button.checked ? qgcPal.buttonHighlight : qgcPal.button
+        color:                      button.checked ? qgcPal.accent : qgcPal.windowCard
         radius:                     ScreenTools.defaultFontPixelWidth * 0.5
     }
 
@@ -61,7 +48,7 @@ Button {
 //            width:                  height
 //            sourceSize.height:      parent.height
 //            fillMode:               Image.PreserveAspectFit
-//            color:                  button.checked ? qgcPal.buttonHighlightText : qgcPal.buttonText
+//            color:                  button.checked ? qgcPal.accentText : qgcPal.textPrimary
 //            source:                 "/qmlimages/PaperPlane.svg"
 //            anchors.verticalCenter: parent.verticalCenter
 //        }
@@ -70,14 +57,14 @@ Button {
             spacing:                ScreenTools.defaultFontPixelHeight * 0.25
             QGCLabel {
                 text:               qsTr("Vehicle ") + (vehicle ? vehicle.id : qsTr("None"))
-                font.family:        ScreenTools.demiboldFontFamily
-                color:              button.checked ? qgcPal.buttonHighlightText : qgcPal.buttonText
+                font.bold:          true
+                color:              button.checked ? qgcPal.accentText : qgcPal.textPrimary
             }
             Row {
                 spacing:            ScreenTools.defaultFontPixelWidth
                 QGCLabel {
                     text:           vehicle ? vehicle.flightMode : qsTr("None")
-                    color:          button.checked ? qgcPal.buttonHighlightText : qgcPal.buttonText
+                    color:          button.checked ? qgcPal.accentText : qgcPal.textPrimary
                 }
                 Rectangle {
                     height:         ScreenTools.defaultFontPixelHeight * 0.5

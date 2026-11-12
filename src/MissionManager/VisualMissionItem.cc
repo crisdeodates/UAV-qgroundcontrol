@@ -1,30 +1,13 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
-#include <QStringList>
-#include <QDebug>
-
 #include "VisualMissionItem.h"
-#include "FirmwarePluginManager.h"
-#include "QGCApplication.h"
-#include "JsonHelper.h"
 #include "TerrainQuery.h"
-#include "TakeoffMissionItem.h"
 #include "PlanMasterController.h"
-#include "QGC.h"
+#include "Vehicle.h"
+#include "QGCMath.h"
 
-const char* VisualMissionItem::jsonTypeKey =                "type";
-const char* VisualMissionItem::jsonTypeSimpleItemValue =    "SimpleItem";
-const char* VisualMissionItem::jsonTypeComplexItemValue =   "ComplexItem";
+// All VisualMissionItem derived classes are parented to masterController in order to tie their lifecycles together.
 
-VisualMissionItem::VisualMissionItem(PlanMasterController* masterController, bool flyView, QObject* parent)
-    : QObject           (parent)
+VisualMissionItem::VisualMissionItem(PlanMasterController* masterController, bool flyView)
+    : QObject           (masterController)
     , _flyView          (flyView)
     , _masterController (masterController)
     , _missionController(masterController->missionController())
@@ -33,8 +16,8 @@ VisualMissionItem::VisualMissionItem(PlanMasterController* masterController, boo
     _commonInit();
 }
 
-VisualMissionItem::VisualMissionItem(const VisualMissionItem& other, bool flyView, QObject* parent)
-    : QObject                   (parent)
+VisualMissionItem::VisualMissionItem(const VisualMissionItem& other, bool flyView)
+    : QObject                   (other._masterController)
     , _flyView                  (flyView)
 {
     *this = other;
@@ -57,6 +40,8 @@ void VisualMissionItem::_commonInit(void)
 
 const VisualMissionItem& VisualMissionItem::operator=(const VisualMissionItem& other)
 {
+    setParent(other._masterController);
+
     _masterController = other._masterController;
     _controllerVehicle = other._controllerVehicle;
 
@@ -75,7 +60,7 @@ const VisualMissionItem& VisualMissionItem::operator=(const VisualMissionItem& o
 }
 
 VisualMissionItem::~VisualMissionItem()
-{    
+{
 }
 
 void VisualMissionItem::setIsCurrentItem(bool isCurrentItem)
@@ -150,7 +135,7 @@ void VisualMissionItem::setAzimuth(double azimuth)
     }
 }
 
-void VisualMissionItem::setMissionFlightStatus(MissionController::MissionFlightStatus_t& missionFlightStatus)
+void VisualMissionItem::setMissionFlightStatus(MissionFlightStatus_t& missionFlightStatus)
 {
     if (!QGC::fuzzyCompare(missionFlightStatus.gimbalYaw, _missionGimbalYaw)) {
         _missionGimbalYaw = missionFlightStatus.gimbalYaw;
@@ -180,7 +165,12 @@ void VisualMissionItem::_updateTerrainAltitude(void)
     _terrainAltitude = qQNaN();
     emit terrainAltitudeChanged(qQNaN());
 
-    if (!_flyView && specifiesCoordinate() && coordinate().isValid()) {
+    if (_terrainQueryFailed) {
+        _terrainQueryFailed = false;
+        emit terrainQueryFailedChanged(_terrainQueryFailed);
+    }
+
+    if ((!_flyView || terrainAltitudeRequiredInFlyView()) && specifiesCoordinate() && coordinate().isValid()) {
         // We use a timer so that any additional requests before the timer fires result in only a single request
         _updateTerrainTimer.start();
     }
@@ -209,6 +199,11 @@ void VisualMissionItem::_terrainDataReceived(bool success, QList<double> heights
     _terrainAltitude = success ? heights[0] : qQNaN();
     emit terrainAltitudeChanged(_terrainAltitude);
     _currentTerrainAtCoordinateQuery = nullptr;
+
+    if (_terrainQueryFailed != !success) {
+        _terrainQueryFailed = !success;
+        emit terrainQueryFailedChanged(_terrainQueryFailed);
+    }
 }
 
 void VisualMissionItem::_setBoundingCube(QGCGeoBoundingCube bc)

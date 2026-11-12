@@ -1,25 +1,19 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "PlanManager.h"
-#include "Vehicle.h"
-#include "FirmwarePlugin.h"
-#include "MAVLinkProtocol.h"
-#include "QGCApplication.h"
-#include "MissionCommandTree.h"
-#include "MissionCommandUIInfo.h"
 
-QGC_LOGGING_CATEGORY(PlanManagerLog, "PlanManagerLog")
+#include "AppMessages.h"
+#include "FirmwarePlugin.h"
+#include "MAVLinkLib.h"
+#include "MAVLinkProtocol.h"
+#include "MissionCommandTree.h"
+#include "QGCLoggingCategory.h"
+#include "Vehicle.h"
+#include "VehicleLinkManager.h"
+
+QGC_LOGGING_CATEGORY(PlanManagerLog, "PlanManager.PlanManager")
 
 PlanManager::PlanManager(Vehicle* vehicle, MAV_MISSION_TYPE planType)
-    : _vehicle                  (vehicle)
-    , _missionCommandTree       (qgcApp()->toolbox()->missionCommandTree())
+    : QObject                   (vehicle)
+    , _vehicle                  (vehicle)
     , _planType                 (planType)
     , _ackTimeoutTimer          (nullptr)
     , _expectedAck              (AckNone)
@@ -45,7 +39,7 @@ void PlanManager::_writeMissionItemsWorker(void)
 {
     _lastMissionRequest = -1;
 
-    emit progressPct(0);
+    emit progressPctChanged(0);
 
     qCDebug(PlanManagerLog) << QStringLiteral("writeMissionItems %1 count:").arg(_planTypeString()) << _writeMissionItems.count();
 
@@ -77,6 +71,11 @@ void PlanManager::writeMissionItems(const QList<MissionItem*>& missionItems)
 
     bool skipFirstItem = _planType == MAV_MISSION_TYPE_MISSION && !_vehicle->firmwarePlugin()->sendHomePositionToVehicle();
 
+    if (skipFirstItem && missionItems.count() > 0) {
+        // First item is not going to be moved to _writeMissionItems, free it now.
+        delete missionItems[0];
+    }
+
     int firstIndex = skipFirstItem ? 1 : 0;
 
     for (int i=firstIndex; i<missionItems.count(); i++) {
@@ -102,19 +101,21 @@ void PlanManager::_writeMissionCount(void)
 {
     qCDebug(PlanManagerLog) << QStringLiteral("_writeMissionCount %1 count:_retryCount").arg(_planTypeString()) << _writeMissionItems.count() << _retryCount;
 
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
+    SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink) {
         mavlink_message_t       message;
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
 
-        mavlink_msg_mission_count_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                            qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
-                                            sharedLink->mavlinkChannel(),
-                                            &message,
-                                            _vehicle->id(),
-                                            MAV_COMP_ID_AUTOPILOT1,
-                                            _writeMissionItems.count(),
-                                            _planType);
+        mavlink_msg_mission_count_pack_chan(
+            MAVLinkProtocol::instance()->getSystemId(),
+            MAVLinkProtocol::getComponentId(),
+            sharedLink->mavlinkChannel(),
+            &message,
+            _vehicle->id(),
+            MAV_COMP_ID_AUTOPILOT1,
+            _writeMissionItems.count(),
+            _planType,
+            0
+        );
 
         _vehicle->sendMessageOnLinkThreadSafe(sharedLink.get(), message);
     }
@@ -148,13 +149,11 @@ void PlanManager::_requestList(void)
     _itemIndicesToRead.clear();
     _clearMissionItems();
 
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
+    SharedLinkInterfacePtr  sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink){
         mavlink_message_t       message;
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
-
-        mavlink_msg_mission_request_list_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                                   qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
+        mavlink_msg_mission_request_list_pack_chan(MAVLinkProtocol::instance()->getSystemId(),
+                                                   MAVLinkProtocol::getComponentId(),
                                                    sharedLink->mavlinkChannel(),
                                                    &message,
                                                    _vehicle->id(),
@@ -179,7 +178,7 @@ void PlanManager::_ackTimeout(void)
         break;
     case AckMissionCount:
         // MISSION_COUNT message expected
-        if (_retryCount > _maxRetryCount) {
+        if (_retryCount >= _maxRetryCount) {
             _sendError(MaxRetryExceeded, tr("Mission request list failed, maximum retries exceeded."));
             _finishTransaction(false);
         } else {
@@ -190,7 +189,7 @@ void PlanManager::_ackTimeout(void)
         break;
     case AckMissionItem:
         // MISSION_ITEM expected
-        if (_retryCount > _maxRetryCount) {
+        if (_retryCount >= _maxRetryCount) {
             _sendError(MaxRetryExceeded, tr("Mission read failed, maximum retries exceeded."));
             _finishTransaction(false);
         } else {
@@ -202,12 +201,25 @@ void PlanManager::_ackTimeout(void)
     case AckMissionRequest:
         // MISSION_REQUEST is expected, or MISSION_ACK to end sequence
         if (_itemIndicesToWrite.count() == 0) {
-            // Vehicle did not send final MISSION_ACK at end of sequence
-            _sendError(ProtocolError, tr("Mission write failed, vehicle failed to send final ack."));
-            _finishTransaction(false);
+            if (_writeMissionItems.isEmpty() || _planType != MAV_MISSION_TYPE_MISSION) {
+                // Nothing to resend for an empty mission. For fence and rally PX4 can answer a resent last item
+                // with a success ack even though storing the plan failed, so don't recover those.
+                _sendError(ProtocolError, tr("Mission write failed, vehicle failed to send final ack."));
+                _finishTransaction(false);
+            } else if (_retryCount >= _maxRetryCount) {
+                _sendError(MaxRetryExceeded, tr("Mission write failed, maximum retries exceeded waiting for final ack."));
+                _finishTransaction(false);
+            } else {
+                // The vehicle may have stored the mission and only the ack was lost. PX4 answers a resent last
+                // item with another ack. The vehicle only recognizes the last item as the duplicate, so resend
+                // that one rather than the last item it happened to request.
+                _retryCount++;
+                qCDebug(PlanManagerLog) << QStringLiteral("Retrying %1 final ack by resending last item, retry Count").arg(_planTypeString()) << _retryCount;
+                _sendMissionItem(_writeMissionItems.count() - 1);
+            }
         } else if (_itemIndicesToWrite[0] == 0) {
             // Vehicle did not respond to MISSION_COUNT, try again
-            if (_retryCount > _maxRetryCount) {
+            if (_retryCount >= _maxRetryCount) {
                 _sendError(MaxRetryExceeded, tr("Mission write mission count failed, maximum retries exceeded."));
                 _finishTransaction(false);
             } else {
@@ -224,7 +236,7 @@ void PlanManager::_ackTimeout(void)
         break;
     case AckMissionClearAll:
         // MISSION_ACK expected
-        if (_retryCount > _maxRetryCount) {
+        if (_retryCount >= _maxRetryCount) {
             _sendError(MaxRetryExceeded, tr("Mission remove all, maximum retries exceeded."));
             _finishTransaction(false);
         } else {
@@ -244,10 +256,14 @@ void PlanManager::_ackTimeout(void)
 
 void PlanManager::_startAckTimeout(AckType_t ack)
 {
+    // Use much shorter timeouts in unit tests since MockLink responds instantly
+    const int retryTimeout = QGC::runningUnitTests() ? 10 : _retryTimeoutMilliseconds;
+    const int ackTimeout = QGC::runningUnitTests() ? kTestAckTimeoutMs : _ackTimeoutMilliseconds;
+
     switch (ack) {
     case AckMissionItem:
         // We are actively trying to get the mission item, so we don't want to wait as long.
-        _ackTimeoutTimer->setInterval(_retryTimeoutMilliseconds);
+        _ackTimeoutTimer->setInterval(retryTimeout);
         break;
     case AckNone:
         // FALLTHROUGH
@@ -258,7 +274,7 @@ void PlanManager::_startAckTimeout(AckType_t ack)
     case AckMissionClearAll:
         // FALLTHROUGH
     case AckGuidedItem:
-        _ackTimeoutTimer->setInterval(_ackTimeoutMilliseconds);
+        _ackTimeoutTimer->setInterval(ackTimeout);
         break;
     }
 
@@ -281,7 +297,7 @@ bool PlanManager::_checkForExpectedAck(AckType_t receivedAck)
         } else {
             // We just warn in this case, this could be crap left over from a previous transaction or the vehicle going bonkers.
             // Whatever it is we let the ack timeout handle any error output to the user.
-            qCDebug(PlanManagerLog) << QString("Out of sequence ack %1 expected:received %2:%3").arg(_planTypeString().arg(_ackTypeToString(_expectedAck)).arg(_ackTypeToString(receivedAck)));
+            qCDebug(PlanManagerLog) << QString("Out of sequence ack %1 expected:received %2:%3").arg(_planTypeString()).arg(_ackTypeToString(_expectedAck)).arg(_ackTypeToString(receivedAck));
         }
         return false;
     }
@@ -290,20 +306,22 @@ bool PlanManager::_checkForExpectedAck(AckType_t receivedAck)
 void PlanManager::_readTransactionComplete(void)
 {
     qCDebug(PlanManagerLog) << "_readTransactionComplete read sequence complete";
-    
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
+
+    SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink) {
         mavlink_message_t       message;
 
-        mavlink_msg_mission_ack_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                          qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
-                                          sharedLink->mavlinkChannel(),
-                                          &message,
-                                          _vehicle->id(),
-                                          MAV_COMP_ID_AUTOPILOT1,
-                                          MAV_MISSION_ACCEPTED,
-                                          _planType);
+        mavlink_msg_mission_ack_pack_chan(
+            MAVLinkProtocol::instance()->getSystemId(),
+            MAVLinkProtocol::getComponentId(),
+            sharedLink->mavlinkChannel(),
+            &message,
+            _vehicle->id(),
+            MAV_COMP_ID_AUTOPILOT1,
+            MAV_MISSION_ACCEPTED,
+            _planType,
+            0
+        );
 
         _vehicle->sendMessageOnLinkThreadSafe(sharedLink.get(), message);
     }
@@ -353,83 +371,61 @@ void PlanManager::_requestNextMissionItem(void)
 
     qCDebug(PlanManagerLog) << QStringLiteral("_requestNextMissionItem %1 sequenceNumber:retry").arg(_planTypeString()) << _itemIndicesToRead[0] << _retryCount;
 
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
+    SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink) {
         mavlink_message_t       message;
 
-        if (_vehicle->capabilityBits() & MAV_PROTOCOL_CAPABILITY_MISSION_INT) {
-            mavlink_msg_mission_request_int_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                                      qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
-                                                      sharedLink->mavlinkChannel(),
-                                                      &message,
-                                                      _vehicle->id(),
-                                                      MAV_COMP_ID_AUTOPILOT1,
-                                                      _itemIndicesToRead[0],
-                    _planType);
-        } else {
-            mavlink_msg_mission_request_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                                  qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
+        mavlink_msg_mission_request_int_pack_chan(MAVLinkProtocol::instance()->getSystemId(),
+                                                  MAVLinkProtocol::getComponentId(),
                                                   sharedLink->mavlinkChannel(),
                                                   &message,
                                                   _vehicle->id(),
                                                   MAV_COMP_ID_AUTOPILOT1,
                                                   _itemIndicesToRead[0],
-                    _planType);
-        }
-
+                                                  _planType);
         _vehicle->sendMessageOnLinkThreadSafe(sharedLink.get(), message);
     }
     _startAckTimeout(AckMissionItem);
 }
 
-void PlanManager::_handleMissionItem(const mavlink_message_t& message, bool missionItemInt)
+void PlanManager::_handleMissionItem(const mavlink_message_t& message)
 {
-    MAV_CMD     command;
-    MAV_FRAME   frame;
-    double      param1;
-    double      param2;
-    double      param3;
-    double      param4;
-    double      param5;
-    double      param6;
-    double      param7;
-    bool        autoContinue;
-    bool        isCurrentItem;
-    int         seq;
+    MAV_CMD          command;
+    MAV_FRAME        frame;
+    MAV_MISSION_TYPE missionType;
+    double           param1;
+    double           param2;
+    double           param3;
+    double           param4;
+    double           param5;
+    double           param6;
+    double           param7;
+    bool             autoContinue;
+    bool             isCurrentItem;
+    int              seq;
 
-    if (missionItemInt) {
-        mavlink_mission_item_int_t missionItem;
-        mavlink_msg_mission_item_int_decode(&message, &missionItem);
+    mavlink_mission_item_int_t missionItem;
+    mavlink_msg_mission_item_int_decode(&message, &missionItem);
 
-        command =       (MAV_CMD)missionItem.command,
-        frame =         (MAV_FRAME)missionItem.frame,
-        param1 =        missionItem.param1;
-        param2 =        missionItem.param2;
-        param3 =        missionItem.param3;
-        param4 =        missionItem.param4;
-        param5 =        missionItem.frame == MAV_FRAME_MISSION ? (double)missionItem.x : (double)missionItem.x * 1e-7;
-        param6 =        missionItem.frame == MAV_FRAME_MISSION ? (double)missionItem.y : (double)missionItem.y * 1e-7;
-        param7 =        (double)missionItem.z;
-        autoContinue =  missionItem.autocontinue;
-        isCurrentItem = missionItem.current;
-        seq =           missionItem.seq;
-    } else {
-        mavlink_mission_item_t missionItem;
-        mavlink_msg_mission_item_decode(&message, &missionItem);
+    command =       (MAV_CMD)missionItem.command;
+    frame =         (MAV_FRAME)missionItem.frame;
+    missionType =   (MAV_MISSION_TYPE)missionItem.mission_type;
+    param1 =        missionItem.param1;
+    param2 =        missionItem.param2;
+    param3 =        missionItem.param3;
+    param4 =        missionItem.param4;
+    param5 =        missionItem.frame == MAV_FRAME_MISSION ? (double)missionItem.x : (double)missionItem.x * 1e-7;
+    param6 =        missionItem.frame == MAV_FRAME_MISSION ? (double)missionItem.y : (double)missionItem.y * 1e-7;
+    param7 =        (double)missionItem.z;
+    autoContinue =  missionItem.autocontinue;
+    isCurrentItem = missionItem.current;
+    seq =           missionItem.seq;
 
-        command =       (MAV_CMD)missionItem.command,
-        frame =         (MAV_FRAME)missionItem.frame,
-        param1 =        missionItem.param1;
-        param2 =        missionItem.param2;
-        param3 =        missionItem.param3;
-        param4 =        missionItem.param4;
-        param5 =        missionItem.x;
-        param6 =        missionItem.y;
-        param7 =        missionItem.z;
-        autoContinue =  missionItem.autocontinue;
-        isCurrentItem = missionItem.current;
-        seq =           missionItem.seq;
+    // Check the mission_type field. It can happen that we receive a late duplicate message for a
+    // different mission_type request.
+    if (missionType != _planType) {
+       qCDebug(PlanManagerLog) << QStringLiteral("_handleMissionItem %1 dropping spurious item seq:command:missionType").arg(_planTypeString()) << seq << command << missionType;
+       return;
     }
 
     // We don't support editing ALT_INT frames so change on the way in.
@@ -437,6 +433,8 @@ void PlanManager::_handleMissionItem(const mavlink_message_t& message, bool miss
         frame = MAV_FRAME_GLOBAL;
     } else if (frame == MAV_FRAME_GLOBAL_RELATIVE_ALT_INT) {
         frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
+    } else if (frame == MAV_FRAME_GLOBAL_TERRAIN_ALT_INT) {
+        frame = MAV_FRAME_GLOBAL_TERRAIN_ALT;
     }
 
     bool ardupilotHomePositionUpdate = false;
@@ -456,7 +454,7 @@ void PlanManager::_handleMissionItem(const mavlink_message_t& message, bool miss
         _vehicle->_setHomePosition(newHomePosition);
         return;
     }
-    
+
     if (_itemIndicesToRead.contains(seq)) {
         _itemIndicesToRead.removeOne(seq);
 
@@ -487,8 +485,8 @@ void PlanManager::_handleMissionItem(const mavlink_message_t& message, bool miss
         return;
     }
 
-    emit progressPct((double)seq / (double)_missionItemCountToRead);
-    
+    emit progressPctChanged((double)seq / (double)_missionItemCountToRead);
+
     _retryCount = 0;
     if (_itemIndicesToRead.count() == 0) {
         _readTransactionComplete();
@@ -503,22 +501,15 @@ void PlanManager::_clearMissionItems(void)
     _clearAndDeleteMissionItems();
 }
 
-void PlanManager::_handleMissionRequest(const mavlink_message_t& message, bool missionItemInt)
+void PlanManager::_handleMissionRequest(const mavlink_message_t& message)
 {
     MAV_MISSION_TYPE    missionRequestMissionType;
     uint16_t            missionRequestSeq;
 
-    if (missionItemInt) {
-        mavlink_mission_request_int_t missionRequest;
-        mavlink_msg_mission_request_int_decode(&message, &missionRequest);
-        missionRequestMissionType = static_cast<MAV_MISSION_TYPE>(missionRequest.mission_type);
-        missionRequestSeq = missionRequest.seq;
-    } else {
-        mavlink_mission_request_t missionRequest;
-        mavlink_msg_mission_request_decode(&message, &missionRequest);
-        missionRequestMissionType = static_cast<MAV_MISSION_TYPE>(missionRequest.mission_type);
-        missionRequestSeq = missionRequest.seq;
-    }
+    mavlink_mission_request_int_t missionRequest;
+    mavlink_msg_mission_request_int_decode(&message, &missionRequest);
+    missionRequestMissionType = static_cast<MAV_MISSION_TYPE>(missionRequest.mission_type);
+    missionRequestSeq = missionRequest.seq;
 
     if (missionRequestMissionType != _planType) {
         // if there was a previous transaction with a different mission_type, it can happen that we receive
@@ -526,7 +517,7 @@ void PlanManager::_handleMissionRequest(const mavlink_message_t& message, bool m
         qCDebug(PlanManagerLog) << QStringLiteral("_handleMissionRequest %1 Incorrect mission_type received expected:actual").arg(_planTypeString()) << _planType << missionRequestMissionType;
         return;
     }
-    
+
     if (!_checkForExpectedAck(AckMissionRequest)) {
         return;
     }
@@ -539,7 +530,10 @@ void PlanManager::_handleMissionRequest(const mavlink_message_t& message, bool m
         return;
     }
 
-    emit progressPct((double)missionRequestSeq / (double)_writeMissionItems.count());
+    emit progressPctChanged((double)missionRequestSeq / (double)_writeMissionItems.count());
+
+    // The vehicle is requesting items, so retries spent on MISSION_COUNT must not count against the final ack.
+    _retryCount = 0;
 
     _lastMissionRequest = missionRequestSeq;
     if (!_itemIndicesToWrite.contains(missionRequestSeq)) {
@@ -547,59 +541,41 @@ void PlanManager::_handleMissionRequest(const mavlink_message_t& message, bool m
     } else {
         _itemIndicesToWrite.removeOne(missionRequestSeq);
     }
-    
-    MissionItem* item = _writeMissionItems[missionRequestSeq];
-    qCDebug(PlanManagerLog) << QStringLiteral("_handleMissionRequest %1 sequenceNumber:command").arg(_planTypeString()) << missionRequestSeq << item->command();
 
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
-        bool                    forceMissionItemInt = (_vehicle->capabilityBits() & MAV_PROTOCOL_CAPABILITY_MISSION_INT) && _vehicle->apmFirmware(); // ArduPilot always expects to get MISSION_ITEM_INT if possible
+    _sendMissionItem(missionRequestSeq);
+}
+
+/// Sends a single mission item to the vehicle as part of a write transaction and (re-)starts the ack timeout.
+/// Used both for the initial send in response to MISSION_REQUEST(_INT), and to resend the last item if the
+/// final MISSION_ACK times out (the vehicle may have stored it but the ack got dropped on the way back).
+void PlanManager::_sendMissionItem(int seq)
+{
+    MissionItem* item = _writeMissionItems[seq];
+    qCDebug(PlanManagerLog) << QStringLiteral("_sendMissionItem %1 sequenceNumber:command").arg(_planTypeString()) << seq << item->command();
+
+    SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink) {
         mavlink_message_t       messageOut;
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
 
-
-        if (missionItemInt || forceMissionItemInt) {
-            mavlink_msg_mission_item_int_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                                   qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
-                                                   sharedLink->mavlinkChannel(),
-                                                   &messageOut,
-                                                   _vehicle->id(),
-                                                   MAV_COMP_ID_AUTOPILOT1,
-                                                   missionRequestSeq,
-                                                   item->frame(),
-                                                   item->command(),
-                                                   missionRequestSeq == 0,
-                                                   item->autoContinue(),
-                                                   item->param1(),
-                                                   item->param2(),
-                                                   item->param3(),
-                                                   item->param4(),
-                                                   item->frame() == MAV_FRAME_MISSION ? item->param5() : item->param5() * 1e7,
-                                                   item->frame() == MAV_FRAME_MISSION ? item->param6() : item->param6() * 1e7,
-                                                   item->param7(),
-                                                   _planType);
-        } else {
-            mavlink_msg_mission_item_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                               qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
+        mavlink_msg_mission_item_int_pack_chan(MAVLinkProtocol::instance()->getSystemId(),
+                                               MAVLinkProtocol::getComponentId(),
                                                sharedLink->mavlinkChannel(),
                                                &messageOut,
                                                _vehicle->id(),
                                                MAV_COMP_ID_AUTOPILOT1,
-                                               missionRequestSeq,
+                                               seq,
                                                item->frame(),
                                                item->command(),
-                                               missionRequestSeq == 0,
+                                               seq == 0,
                                                item->autoContinue(),
                                                item->param1(),
                                                item->param2(),
                                                item->param3(),
                                                item->param4(),
-                                               item->param5(),
-                                               item->param6(),
+                                               item->frame() == MAV_FRAME_MISSION ? item->param5() : item->param5() * 1e7,
+                                               item->frame() == MAV_FRAME_MISSION ? item->param6() : item->param6() * 1e7,
                                                item->param7(),
                                                _planType);
-        }
-
         _vehicle->sendMessageOnLinkThreadSafe(sharedLink.get(), messageOut);
     }
     _startAckTimeout(AckMissionRequest);
@@ -608,7 +584,7 @@ void PlanManager::_handleMissionRequest(const mavlink_message_t& message, bool m
 void PlanManager::_handleMissionAck(const mavlink_message_t& message)
 {
     mavlink_mission_ack_t missionAck;
-    
+
     mavlink_msg_mission_ack_decode(&message, &missionAck);
     if (missionAck.mission_type != _planType) {
         // if there was a previous transaction with a different mission_type, it can happen that we receive
@@ -628,7 +604,7 @@ void PlanManager::_handleMissionAck(const mavlink_message_t& message)
     // Save the retry ack before calling _checkForExpectedAck since we'll need it to determine what
     // type of a protocol sequence we are in.
     AckType_t savedExpectedAck = _expectedAck;
-    
+
     // We can get a MISSION_ACK with an error at any time, so if the Acks don't match it is not
     // a protocol sequence error. Call _checkForExpectedAck with _retryAck so it will succeed no
     // matter what.
@@ -666,6 +642,11 @@ void PlanManager::_handleMissionAck(const mavlink_message_t& message)
                 _sendError(VehicleAckError, _missionResultToString((MAV_MISSION_RESULT)missionAck.type));
                 _finishTransaction(false);
             }
+        } else if (_itemIndicesToWrite.count() == 0 && _retryCount > 0 && missionAck.type == MAV_MISSION_ERROR) {
+            // ArduPilot rejects the resent last item once its upload is complete, so this error says nothing
+            // about the mission itself, which may well have been stored.
+            _sendError(ProtocolError, tr("Mission write could not be confirmed, the vehicle never acknowledged the final item. The mission may have been uploaded, load it from the vehicle to verify."));
+            _finishTransaction(false);
         } else {
             _sendError(VehicleAckError, _missionResultToString((MAV_MISSION_RESULT)missionAck.type));
             _finishTransaction(false);
@@ -700,20 +681,13 @@ void PlanManager::_mavlinkMessageReceived(const mavlink_message_t& message)
         _handleMissionCount(message);
         break;
 
-    case MAVLINK_MSG_ID_MISSION_ITEM:
-        _handleMissionItem(message, false /* missionItemInt */);
-        break;
-
     case MAVLINK_MSG_ID_MISSION_ITEM_INT:
-        _handleMissionItem(message, true /* missionItemInt */);
+        _handleMissionItem(message);
         break;
 
     case MAVLINK_MSG_ID_MISSION_REQUEST:
-        _handleMissionRequest(message, false /* missionItemInt */);
-        break;
-
     case MAVLINK_MSG_ID_MISSION_REQUEST_INT:
-        _handleMissionRequest(message, true /* missionItemInt */);
+        _handleMissionRequest(message);
         break;
 
     case MAVLINK_MSG_ID_MISSION_ACK:
@@ -743,7 +717,7 @@ QString PlanManager::_ackTypeToString(AckType_t ackType)
     case AckGuidedItem:
         return QString("Guided Mode Item");
     default:
-        qWarning(PlanManagerLog) << QStringLiteral("Fell off end of switch statement %1").arg(_planTypeString());
+        qCWarning(PlanManagerLog) << QStringLiteral("Fell off end of switch statement %1").arg(_planTypeString());
         return QString("QGC Internal Error");
     }
 }
@@ -756,7 +730,7 @@ QString PlanManager::_lastMissionReqestString(MAV_MISSION_RESULT result)
     if (_lastMissionRequest >= 0 && _lastMissionRequest < _writeMissionItems.count()) {
         MissionItem* item = _writeMissionItems[_lastMissionRequest];
 
-        prefix = tr("Item #%1 Command: %2").arg(_lastMissionRequest).arg(_missionCommandTree->friendlyName(item->command()));
+        prefix = tr("Item #%1 Command: %2").arg(_lastMissionRequest).arg(MissionCommandTree::instance()->friendlyName(item->command()));
 
         switch (result) {
         case MAV_MISSION_UNSUPPORTED_FRAME:
@@ -848,7 +822,7 @@ QString PlanManager::_missionResultToString(MAV_MISSION_RESULT result)
         error = tr("Not accepting any mission commands.");
         break;
     default:
-        qWarning(PlanManagerLog) << QStringLiteral("Fell off end of switch statement %1 %2").arg(_planTypeString()).arg(result);
+        qCWarning(PlanManagerLog) << QStringLiteral("Fell off end of switch statement %1 %2").arg(_planTypeString()).arg(result);
         error = tr("Unknown error: %1.").arg(result);
         break;
     }
@@ -863,7 +837,7 @@ QString PlanManager::_missionResultToString(MAV_MISSION_RESULT result)
 
 void PlanManager::_finishTransaction(bool success, bool apmGuidedItemWrite)
 {
-    emit progressPct(1);
+    emit progressPctChanged(1);
     _disconnectFromMavlink();
 
     _itemIndicesToRead.clear();
@@ -930,17 +904,16 @@ void PlanManager::_removeAllWorker(void)
 {
     qCDebug(PlanManagerLog) << "_removeAllWorker";
 
-    emit progressPct(0);
+    emit progressPctChanged(0);
 
     _connectToMavlink();
 
-    WeakLinkInterfacePtr weakLink = _vehicle->vehicleLinkManager()->primaryLink();
-    if (!weakLink.expired()) {
+    SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink) {
         mavlink_message_t       message;
-        SharedLinkInterfacePtr  sharedLink = weakLink.lock();
 
-        mavlink_msg_mission_clear_all_pack_chan(qgcApp()->toolbox()->mavlinkProtocol()->getSystemId(),
-                                                qgcApp()->toolbox()->mavlinkProtocol()->getComponentId(),
+        mavlink_msg_mission_clear_all_pack_chan(MAVLinkProtocol::instance()->getSystemId(),
+                                                MAVLinkProtocol::getComponentId(),
                                                 sharedLink->mavlinkChannel(),
                                                 &message,
                                                 _vehicle->id(),

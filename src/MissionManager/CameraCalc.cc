@@ -1,34 +1,14 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "CameraCalc.h"
-#include "JsonHelper.h"
+#include "JsonParsing.h"
 #include "Vehicle.h"
 #include "CameraMetaData.h"
 #include "PlanMasterController.h"
 
-#include <QQmlEngine>
-
-const char* CameraCalc::cameraNameName =                    "CameraName";
-const char* CameraCalc::valueSetIsDistanceName =            "ValueSetIsDistance";
-const char* CameraCalc::distanceToSurfaceName =             "DistanceToSurface";
-const char* CameraCalc::distanceToSurfaceRelativeName =     "DistanceToSurfaceRelative";
-const char* CameraCalc::imageDensityName =                  "ImageDensity";
-const char* CameraCalc::frontalOverlapName =                "FrontalOverlap";
-const char* CameraCalc::sideOverlapName =                   "SideOverlap";
-const char* CameraCalc::adjustedFootprintFrontalName =      "AdjustedFootprintFrontal";
-const char* CameraCalc::adjustedFootprintSideName =         "AdjustedFootprintSide";
-
-const char* CameraCalc::_jsonCameraSpecTypeKey =            "CameraSpecType";
+#include <QtQml/QQmlEngine>
 
 CameraCalc::CameraCalc(PlanMasterController* masterController, const QString& settingsGroup, QObject* parent)
     : CameraSpec                    (settingsGroup, parent)
+    , _distanceMode                 (masterController->missionController()->globalAltitudeFrameDefault())
     , _knownCameraList              (masterController->controllerVehicle()->staticCameraList())
     , _metaDataMap                  (FactMetaData::createMapFromJsonFile(QStringLiteral(":/json/CameraCalc.FactMetaData.json"), this))
     , _cameraNameFact               (settingsGroup, _metaDataMap[cameraNameName])
@@ -42,19 +22,19 @@ CameraCalc::CameraCalc(PlanMasterController* masterController, const QString& se
 {
     QQmlEngine::setObjectOwnership(this, QQmlEngine::CppOwnership);
 
-    connect(&_valueSetIsDistanceFact,       &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_distanceToSurfaceFact,        &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_imageDensityFact,             &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_frontalOverlapFact,           &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_sideOverlapFact,              &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_adjustedFootprintSideFact,    &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_adjustedFootprintFrontalFact, &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(&_cameraNameFact,               &Fact::valueChanged,                            this, &CameraCalc::_setDirty);
-    connect(this,                           &CameraCalc::distanceToSurfaceRelativeChanged,  this, &CameraCalc::_setDirty);
+    connect(&_valueSetIsDistanceFact,       &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_distanceToSurfaceFact,        &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_imageDensityFact,             &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_frontalOverlapFact,           &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_sideOverlapFact,              &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_adjustedFootprintSideFact,    &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_adjustedFootprintFrontalFact, &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(&_cameraNameFact,               &Fact::rawValueChanged,             this, &CameraCalc::_setDirty);
+    connect(this,                           &CameraCalc::distanceModeChanged,   this, &CameraCalc::_setDirty);
 
-    connect(&_cameraNameFact,               &Fact::valueChanged,                            this, &CameraCalc::_cameraNameChanged);
-    connect(&_cameraNameFact,               &Fact::valueChanged,                            this, &CameraCalc::isManualCameraChanged);
-    connect(&_cameraNameFact,               &Fact::valueChanged,                            this, &CameraCalc::isCustomCameraChanged);
+    connect(&_cameraNameFact, &Fact::valueChanged, this, &CameraCalc::_cameraNameChanged);
+    connect(&_cameraNameFact, &Fact::valueChanged, this, &CameraCalc::isManualCameraChanged);
+    connect(&_cameraNameFact, &Fact::valueChanged, this, &CameraCalc::isCustomCameraChanged);
 
     connect(&_distanceToSurfaceFact,    &Fact::rawValueChanged, this, &CameraCalc::_recalcTriggerDistance);
     connect(&_imageDensityFact,         &Fact::rawValueChanged, this, &CameraCalc::_recalcTriggerDistance);
@@ -81,14 +61,6 @@ CameraCalc::CameraCalc(PlanMasterController* masterController, const QString& se
     _setBrandModelFromCanonicalName(_cameraNameFact.rawValue().toString());
 
     setDirty(false);
-}
-
-void CameraCalc::setDirty(bool dirty)
-{
-    if (_dirty != dirty) {
-        _dirty = dirty;
-        emit dirtyChanged(_dirty);
-    }
 }
 
 void CameraCalc::_cameraNameChanged(void)
@@ -138,7 +110,10 @@ void CameraCalc::_cameraNameChanged(void)
     }
 
     _recalcTriggerDistance();
-    _adjustDistanceToSurfaceRelative();
+    if (!isManualCamera() && distanceMode() == QGroundControlQmlGlobal::AltitudeFrameAbsolute) {
+        // Manual grids support absolute alts whereas nothing else does. Make sure we are not left in absolute
+        setDistanceMode(QGroundControlQmlGlobal::AltitudeFrameRelative);
+    }
 }
 
 void CameraCalc::_recalcTriggerDistance(void)
@@ -186,12 +161,12 @@ void CameraCalc::_recalcTriggerDistance(void)
 
 void CameraCalc::save(QJsonObject& json) const
 {
-    json[JsonHelper::jsonVersionKey] =      1;
-    json[adjustedFootprintSideName] =       _adjustedFootprintSideFact.rawValue().toDouble();
-    json[adjustedFootprintFrontalName] =    _adjustedFootprintFrontalFact.rawValue().toDouble();
-    json[distanceToSurfaceName] =           _distanceToSurfaceFact.rawValue().toDouble();
-    json[distanceToSurfaceRelativeName] =   _distanceToSurfaceRelative;
-    json[cameraNameName] =                  _cameraNameFact.rawValue().toString();
+    json[JsonParsing::jsonVersionKey]    = 2;
+    json[adjustedFootprintSideName]     = _adjustedFootprintSideFact.rawValue().toDouble();
+    json[adjustedFootprintFrontalName]  = _adjustedFootprintFrontalFact.rawValue().toDouble();
+    json[distanceToSurfaceName]         = _distanceToSurfaceFact.rawValue().toDouble();
+    json[distanceModeName]              = _distanceMode;
+    json[cameraNameName]                = _cameraNameFact.rawValue().toString();
 
     if (!isManualCamera()) {
         CameraSpec::save(json);
@@ -202,73 +177,88 @@ void CameraCalc::save(QJsonObject& json) const
     }
 }
 
-bool CameraCalc::load(const QJsonObject& json, QString& errorString)
+bool CameraCalc::load(const QJsonObject& originalJson, bool deprecatedFollowTerrain, QString& errorString, bool forPresets)
 {
-    QJsonObject v1Json = json;
+    QJsonObject json = originalJson;
 
-    if (!json.contains(JsonHelper::jsonVersionKey)) {
-        // Version 0 file. Differences from Version 1 for conversion:
-        //  JsonHelper::jsonVersionKey not stored
-        //  _jsonCameraSpecTypeKey stores CameraSpecType
-        //  _jsonCameraNameKey only set if CameraSpecKnown
-        int cameraSpec = v1Json[_jsonCameraSpecTypeKey].toInt(CameraSpecNone);
-        if (cameraSpec == CameraSpecCustom) {
-            v1Json[cameraNameName] = canonicalCustomCameraName();
-        } else if (cameraSpec == CameraSpecNone) {
-            v1Json[cameraNameName] = canonicalManualCameraName();
-        }
-        v1Json.remove(_jsonCameraSpecTypeKey);
-        v1Json[JsonHelper::jsonVersionKey] = 1;
+    int version = 0;
+    if (json.contains(JsonParsing::jsonVersionKey)) {
+        version = json[JsonParsing::jsonVersionKey].toInt();
     }
 
-    int version = v1Json[JsonHelper::jsonVersionKey].toInt();
-    if (version != 1) {
+    if (version == 0) {
+        // Version 0->1 differences:
+        //  - JsonParsing::jsonVersionKey not stored
+        //  - _jsonCameraSpecTypeKeyDeprecated is only in v0 files and stores CameraSpecType. V2 files store same info in cameraNameName.
+        //  - _jsonCameraNameKey only set if CameraSpecKnown
+        int cameraSpec = json[_jsonCameraSpecTypeKeyDeprecated].toInt(CameraSpecNone);
+        if (cameraSpec == CameraSpecCustom) {
+            json[cameraNameName] = canonicalCustomCameraName();
+        } else if (cameraSpec == CameraSpecNone) {
+            json[cameraNameName] = canonicalManualCameraName();
+        }
+        json.remove(_jsonCameraSpecTypeKeyDeprecated);
+        version = 1;
+    }
+    if (version == 1) {
+        // Version 1->2 differences:
+        //  - _jsonDistanceToSurfaceRelativeKeyDeprecated changed to distanceMode
+        //  - deprecatedFollowTerrain value was loaded from upper level callers and represents AltitudeFrameCalcAboveTerrain. AltitudeFrameTerrain was not supported yet.
+        if (deprecatedFollowTerrain) {
+            json[distanceModeName] = QGroundControlQmlGlobal::AltitudeFrameCalcAboveTerrain;
+        } else {
+            json[distanceModeName] = json[_jsonDistanceToSurfaceRelativeKeyDeprecated].toBool() ? QGroundControlQmlGlobal::AltitudeFrameRelative : QGroundControlQmlGlobal::AltitudeFrameAbsolute;
+        }
+        json.remove(_jsonDistanceToSurfaceRelativeKeyDeprecated);
+        version = 2;
+    }
+    if (version != 2) {
         errorString = tr("CameraCalc section version %1 not supported").arg(version);
         return false;
     }
 
-    QList<JsonHelper::KeyValidateInfo> keyInfoList1 = {
+    QList<JsonParsing::KeyValidateInfo> keyInfoList1 = {
         { cameraNameName,                   QJsonValue::String, true },
         { adjustedFootprintSideName,        QJsonValue::Double, true },
         { adjustedFootprintFrontalName,     QJsonValue::Double, true },
         { distanceToSurfaceName,            QJsonValue::Double, true },
-        { distanceToSurfaceRelativeName,    QJsonValue::Bool,   true },
+        { distanceModeName,                 QJsonValue::Double, true },
     };
-    if (!JsonHelper::validateKeys(v1Json, keyInfoList1, errorString)) {
+    if (!JsonParsing::validateKeys(json, keyInfoList1, errorString)) {
         return false;
     }
 
-    _disableRecalc = true;
-
-    _distanceToSurfaceRelative = v1Json[distanceToSurfaceRelativeName].toBool();
-
-    _adjustedFootprintSideFact.setRawValue      (v1Json[adjustedFootprintSideName].toDouble());
-    _adjustedFootprintFrontalFact.setRawValue   (v1Json[adjustedFootprintFrontalName].toDouble());
-    _distanceToSurfaceFact.setRawValue          (v1Json[distanceToSurfaceName].toDouble());
+    _disableRecalc = !forPresets;
 
     // We have to clean up camera names. Older builds incorrectly used translated the camera names in the persisted plan file.
     // Newer builds use a canonical english camera name in plan files.
-    QString canonicalCameraName = _validCanonicalCameraName(v1Json[cameraNameName].toString());
+    QString canonicalCameraName = _validCanonicalCameraName(json[cameraNameName].toString());
     _cameraNameFact.setRawValue(canonicalCameraName);
 
+    setDistanceMode(static_cast<QGroundControlQmlGlobal::AltitudeFrame>(json[distanceModeName].toInt()));
+
+    _adjustedFootprintSideFact.setRawValue      (json[adjustedFootprintSideName].toDouble());
+    _adjustedFootprintFrontalFact.setRawValue   (json[adjustedFootprintFrontalName].toDouble());
+    _distanceToSurfaceFact.setRawValue          (json[distanceToSurfaceName].toDouble());
+
     if (!isManualCamera()) {
-        QList<JsonHelper::KeyValidateInfo> keyInfoList2 = {
+        QList<JsonParsing::KeyValidateInfo> keyInfoList2 = {
             { valueSetIsDistanceName,   QJsonValue::Bool,   true },
             { imageDensityName,         QJsonValue::Double, true },
             { frontalOverlapName,       QJsonValue::Double, true },
             { sideOverlapName,          QJsonValue::Double, true },
         };
-        if (!JsonHelper::validateKeys(v1Json, keyInfoList2, errorString)) {
+        if (!JsonParsing::validateKeys(json, keyInfoList2, errorString)) {
             _disableRecalc = false;
             return false;
         }
 
-        _valueSetIsDistanceFact.setRawValue (v1Json[valueSetIsDistanceName].toBool());
-        _frontalOverlapFact.setRawValue     (v1Json[frontalOverlapName].toDouble());
-        _sideOverlapFact.setRawValue        (v1Json[sideOverlapName].toDouble());
-        _imageDensityFact.setRawValue       (v1Json[imageDensityName].toDouble());
+        _valueSetIsDistanceFact.setRawValue (json[valueSetIsDistanceName].toBool());
+        _frontalOverlapFact.setRawValue     (json[frontalOverlapName].toDouble());
+        _sideOverlapFact.setRawValue        (json[sideOverlapName].toDouble());
+        _imageDensityFact.setRawValue       (json[imageDensityName].toDouble());
 
-        if (!CameraSpec::load(v1Json, errorString)) {
+        if (!CameraSpec::load(json, errorString)) {
             _disableRecalc = false;
             return false;
         }
@@ -303,18 +293,11 @@ QString CameraCalc::xlatManualCameraName(void)
     return tr("Manual (no camera specs)");
 }
 
-void CameraCalc::_adjustDistanceToSurfaceRelative(void)
+void CameraCalc::setDistanceMode(QGroundControlQmlGlobal::AltitudeFrame altFrame)
 {
-    if (!isManualCamera()) {
-        setDistanceToSurfaceRelative(true);
-    }
-}
-
-void CameraCalc::setDistanceToSurfaceRelative(bool distanceToSurfaceRelative)
-{
-    if (distanceToSurfaceRelative != _distanceToSurfaceRelative) {
-        _distanceToSurfaceRelative = distanceToSurfaceRelative;
-        emit distanceToSurfaceRelativeChanged(distanceToSurfaceRelative);
+    if (altFrame != _distanceMode) {
+        _distanceMode = altFrame;
+        emit distanceModeChanged(_distanceMode);
     }
 }
 

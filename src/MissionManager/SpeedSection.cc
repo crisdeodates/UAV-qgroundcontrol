@@ -1,17 +1,8 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "SpeedSection.h"
-#include "JsonHelper.h"
-#include "FirmwarePlugin.h"
 #include "SimpleMissionItem.h"
 #include "PlanMasterController.h"
+#include "Vehicle.h"
+#include "QmlObjectListModel.h"
 
 const char* SpeedSection::_flightSpeedName = "FlightSpeed";
 
@@ -40,7 +31,7 @@ SpeedSection::SpeedSection(PlanMasterController* masterController, QObject* pare
     _flightSpeedFact.setRawValue(flightSpeed);
 
     connect(this,               &SpeedSection::specifyFlightSpeedChanged,   this, &SpeedSection::settingsSpecifiedChanged);
-    connect(&_flightSpeedFact,  &Fact::valueChanged,                        this, &SpeedSection::_flightSpeedChanged);
+    connect(&_flightSpeedFact,  &Fact::rawValueChanged,                     this, &SpeedSection::_flightSpeedChanged);
 
     connect(this,               &SpeedSection::specifyFlightSpeedChanged,   this, &SpeedSection::_updateSpecifiedFlightSpeed);
     connect(&_flightSpeedFact,  &Fact::valueChanged,                        this, &SpeedSection::_updateSpecifiedFlightSpeed);

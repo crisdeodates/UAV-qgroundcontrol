@@ -1,17 +1,8 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "RallyPointManager.h"
-#include "ParameterManager.h"
 #include "Vehicle.h"
+#include "QGCLoggingCategory.h"
 
-QGC_LOGGING_CATEGORY(RallyPointManagerLog, "RallyPointManagerLog")
+QGC_LOGGING_CATEGORY(RallyPointManagerLog, "PlanManager.RallyPointManager")
 
 RallyPointManager::RallyPointManager(Vehicle* vehicle)
     : PlanManager(vehicle, MAV_MISSION_TYPE_RALLY)
@@ -36,26 +27,18 @@ void RallyPointManager::_sendError(ErrorCode_t errorCode, const QString& errorMs
     emit error(errorCode, errorMsg);
 }
 
-void RallyPointManager::sendToVehicle(const QList<QGeoCoordinate>& rgPoints)
+void RallyPointManager::sendToVehicle(const QList<RallyPointData>& rgPoints)
 {
-    _rgSendPoints.clear();
-    for (const QGeoCoordinate& rallyPoint: rgPoints) {
-        _rgSendPoints.append(rallyPoint);
-    }
+    _rgSendPoints = rgPoints;
 
     QList<MissionItem*> rallyItems;
     for (int i=0; i<rgPoints.count(); i++) {
-
-        MissionItem* item = new MissionItem(0,
-                                            MAV_CMD_NAV_RALLY_POINT,
-                                            MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                                            0, 0, 0, 0,                 // param 1-4 unused
-                                            rgPoints[i].latitude(),
-                                            rgPoints[i].longitude(),
-                                            rgPoints[i].altitude(),
-                                            false,                      // autocontinue
-                                            false,                      // isCurrentItem
-                                            this);                      // parent
+        MissionItem* item = new MissionItem(
+            0, MAV_CMD_NAV_RALLY_POINT, rgPoints[i].frame, 0, 0, 0, 0,  // param 1-4 unused
+            rgPoints[i].coordinate.latitude(), rgPoints[i].coordinate.longitude(), rgPoints[i].coordinate.altitude(),
+            false,                                                      // autocontinue
+            false,                                                      // isCurrentItem
+            this);                                                      // parent
         rallyItems.append(item);
     }
 
@@ -71,7 +54,7 @@ void RallyPointManager::removeAll(void)
 
 bool RallyPointManager::supported(void) const
 {
-    return (_vehicle->capabilityBits() & MAV_PROTOCOL_CAPABILITY_MISSION_RALLY) && (_vehicle->maxProtoVersion() >= 200);
+    return _vehicle->capabilityBits() & MAV_PROTOCOL_CAPABILITY_MISSION_RALLY;
 }
 
 void RallyPointManager::_planManagerLoadComplete(bool removeAllRequested)
@@ -88,7 +71,7 @@ void RallyPointManager::_planManagerLoadComplete(bool removeAllRequested)
         MAV_CMD command = item->command();
 
         if (command == MAV_CMD_NAV_RALLY_POINT) {
-            _rgPoints.append(QGeoCoordinate(item->param5(), item->param6(), item->param7()));
+            _rgPoints.append({QGeoCoordinate(item->param5(), item->param6(), item->param7()), item->frame()});
         } else {
             qCDebug(RallyPointManagerLog) << "RallyPointManager load: Unsupported command %1" << item->command();
             break;

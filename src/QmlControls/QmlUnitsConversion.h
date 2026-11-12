@@ -1,31 +1,21 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+#pragma once
 
-#ifndef QMLUNITSCONVERSION_H
-#define QMLUNITSCONVERSION_H
-
-#include <QObject>
-#include <qmath.h>
+#include <QtCore/QObject>
+#include <QtCore/QtMath>
 #include "FactMetaData.h"
 
 class QmlUnitsConversion : public QObject
 {
     Q_OBJECT
 public:
-    QmlUnitsConversion(QObject *parent=nullptr): QObject(parent) {}
+    explicit QmlUnitsConversion(QObject* parent = nullptr);
     ~QmlUnitsConversion() = default;
 
-    Q_PROPERTY(QString appSettingsHorizontalDistanceUnitsString READ appSettingsHorizontalDistanceUnitsString CONSTANT)
-    Q_PROPERTY(QString appSettingsVerticalDistanceUnitsString   READ appSettingsVerticalDistanceUnitsString   CONSTANT)
-    Q_PROPERTY(QString appSettingsAreaUnitsString               READ appSettingsAreaUnitsString               CONSTANT)
-    Q_PROPERTY(QString appSettingsWeightUnitsString             READ appSettingsWeightUnitsString             CONSTANT)
-    Q_PROPERTY(QString appSettingsSpeedUnitsString              READ appSettingsSpeedUnitsString              CONSTANT)
+    Q_PROPERTY(QString appSettingsHorizontalDistanceUnitsString READ appSettingsHorizontalDistanceUnitsString NOTIFY unitsChanged)
+    Q_PROPERTY(QString appSettingsVerticalDistanceUnitsString   READ appSettingsVerticalDistanceUnitsString   NOTIFY unitsChanged)
+    Q_PROPERTY(QString appSettingsAreaUnitsString               READ appSettingsAreaUnitsString               NOTIFY unitsChanged)
+    Q_PROPERTY(QString appSettingsWeightUnitsString             READ appSettingsWeightUnitsString             NOTIFY unitsChanged)
+    Q_PROPERTY(QString appSettingsSpeedUnitsString              READ appSettingsSpeedUnitsString              NOTIFY unitsChanged)
 
     /// Converts from meters to the user specified distance unit
     Q_INVOKABLE QVariant metersToAppSettingsHorizontalDistanceUnits(const QVariant& meters) const { return FactMetaData::metersToAppSettingsHorizontalDistanceUnits(meters); }
@@ -35,6 +25,13 @@ public:
 
     QString appSettingsHorizontalDistanceUnitsString(void) const { return FactMetaData::appSettingsHorizontalDistanceUnitsString(); }
 
+    /// Converts from meters to the user specified horizontal distance unit with units appended, e.g. "16.4 ft".
+    /// Keeps the converted value and units label paired so they can never disagree.
+    Q_INVOKABLE QString metersToAppSettingsHorizontalDistanceUnitsString(const QVariant& meters, int decimalPlaces = 1) const
+    {
+        return QStringLiteral("%1 %2").arg(FactMetaData::metersToAppSettingsHorizontalDistanceUnits(meters).toDouble(), 0, 'f', decimalPlaces).arg(FactMetaData::appSettingsHorizontalDistanceUnitsString());
+    }
+
     /// Converts from meters to the user specified distance unit
     Q_INVOKABLE QVariant metersToAppSettingsVerticalDistanceUnits(const QVariant& meters) const { return FactMetaData::metersToAppSettingsVerticalDistanceUnits(meters); }
 
@@ -42,6 +39,13 @@ public:
     Q_INVOKABLE QVariant appSettingsVerticalDistanceUnitsToMeters(const QVariant& distance) const { return FactMetaData::appSettingsVerticalDistanceUnitsToMeters(distance); }
 
     QString appSettingsVerticalDistanceUnitsString(void) const { return FactMetaData::appSettingsVerticalDistanceUnitsString(); }
+
+    /// Converts from meters to the user specified vertical distance unit with units appended, e.g. "16.4 ft".
+    /// Keeps the converted value and units label paired so they can never disagree.
+    Q_INVOKABLE QString metersToAppSettingsVerticalDistanceUnitsString(const QVariant& meters, int decimalPlaces = 1) const
+    {
+        return QStringLiteral("%1 %2").arg(FactMetaData::metersToAppSettingsVerticalDistanceUnits(meters).toDouble(), 0, 'f', decimalPlaces).arg(FactMetaData::appSettingsVerticalDistanceUnitsString());
+    }
 
     /// Converts from grams to the user specified weight unit
     Q_INVOKABLE QVariant gramsToAppSettingsWeightUnits(const QVariant& meters) const { return FactMetaData::gramsToAppSettingsWeightUnits(meters); }
@@ -59,11 +63,19 @@ public:
 
     QString appSettingsAreaUnitsString(void) const { return FactMetaData::appSettingsAreaUnitsString(); }
 
+    /// Converts from meters/second to the user specified speed unit
+    Q_INVOKABLE QVariant metersSecondToAppSettingsSpeedUnits(const QVariant& metersSecond) const { return FactMetaData::metersSecondToAppSettingsSpeedUnits(metersSecond); }
+
+    /// Converts from user specified speed unit to meters/second
+    Q_INVOKABLE QVariant appSettingsSpeedUnitsToMetersSecond(const QVariant& speed) const { return FactMetaData::appSettingsSpeedUnitsToMetersSecond(speed); }
+
     /// Returns the string for speed units which has configued by user
     QString appSettingsSpeedUnitsString() { return FactMetaData::appSettingsSpeedUnitsString(); }
 
     Q_INVOKABLE double degreesToRadians(double degrees) { return qDegreesToRadians(degrees); }
     Q_INVOKABLE double radiansToDegrees(double radians) { return qRadiansToDegrees(radians); }
-};
 
-#endif // QMLUNITSCONVERSION_H
+signals:
+    /// Any app units setting changed. Bindings which only call the conversion methods must refresh on this.
+    void unitsChanged();
+};

@@ -1,34 +1,22 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
+import QtQuick.Dialogs
 
-import QtQuick          2.12
-import QtQuick.Layouts  1.2
-import QtQuick.Controls 2.5
-import QtQuick.Dialogs  1.3
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.Controllers   1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 QGCPopupDialog {
-    title:      qsTr("Load Parameters")
-    buttons:    StandardButton.Cancel | (paramController.diffList.count ? StandardButton.Ok : 0)
+    title:                  qsTr("Load Parameters")
+    buttons:                Dialog.Cancel | (_sendableCount > 0 ? Dialog.Ok : 0)
+    acceptButtonEnabled:    paramController.diffSelectedCount > 0
 
-    property var paramController
+    required property var paramController
 
-    function accept() {
-        hideDialog()
-        paramController.sendDiff();
-    }
+    property int _sendableCount: paramController.diffSendableCount
+
+    onAccepted: paramController.sendDiff()
 
     Component.onDestruction: paramController.clearDiff();
 
@@ -36,31 +24,81 @@ QGCPopupDialog {
         spacing: ScreenTools.defaultDialogControlSpacing
 
         QGCLabel {
+            id:                     summaryLabel
+            objectName:             "diffSummaryLabel"
             Layout.preferredWidth:  mainGrid.visible ? mainGrid.width : ScreenTools.defaultFontPixelWidth * 40
             wrapMode:               Text.WordWrap
-            text:                   paramController.diffList.count ?
-                                        qsTr("The following parameters from the loaded file differ from what is currently set on the Vehicle. Click 'Ok' to update them on the Vehicle.") :
-                                        qsTr("There are no differences between the file loaded and the current settings on the Vehicle.")
+            text: {
+                var clauses = []
+                if (_sendableCount > 0) {
+                    if (paramController.diffNoVehicleCount > 0) {
+                        clauses.push(qsTr("%1 will be changed (including %2 not currently on the Vehicle)").arg(_sendableCount).arg(paramController.diffNoVehicleCount))
+                    } else {
+                        clauses.push(qsTr("%1 will be changed").arg(_sendableCount))
+                    }
+                }
+                if (paramController.diffUnchangedCount === 1) {
+                    clauses.push(qsTr("1 already matches the Vehicle"))
+                } else if (paramController.diffUnchangedCount > 1) {
+                    clauses.push(qsTr("%1 already match the Vehicle").arg(paramController.diffUnchangedCount))
+                }
+                if (paramController.diffReadOnlyCount === 1) {
+                    clauses.push(qsTr("1 read-only parameter will not be sent"))
+                } else if (paramController.diffReadOnlyCount > 1) {
+                    clauses.push(qsTr("%1 read-only parameters will not be sent").arg(paramController.diffReadOnlyCount))
+                }
+                if (paramController.diffMissingParams.length > 0) {
+                    clauses.push(qsTr("%1 not found on the Vehicle and cannot be sent").arg(paramController.diffMissingParams.length))
+                }
+                if (paramController.diffInvalidParams.length === 1) {
+                    clauses.push(qsTr("1 has an invalid value and will not be sent"))
+                } else if (paramController.diffInvalidParams.length > 1) {
+                    clauses.push(qsTr("%1 have invalid values and will not be sent").arg(paramController.diffInvalidParams.length))
+                }
+                if (paramController.diffParsedCount === 1) {
+                    return clauses.length === 0 ? qsTr("Loaded 1 parameter from file.")
+                                                : qsTr("Loaded 1 parameter from file: %1.").arg(clauses.join(", "))
+                }
+                return clauses.length === 0 ? qsTr("Loaded %1 parameters from file.").arg(paramController.diffParsedCount)
+                                            : qsTr("Loaded %1 parameters from file: %2.").arg(paramController.diffParsedCount).arg(clauses.join(", "))
+            }
+        }
+
+        QGCLabel {
+            objectName:             "diffOkHintLabel"
+            Layout.preferredWidth:  summaryLabel.Layout.preferredWidth
+            wrapMode:               Text.WordWrap
+            visible:                _sendableCount > 0
+            text:                   qsTr("Click 'Ok' to update the parameters below on the Vehicle.")
         }
 
         GridLayout {
-            id:         mainGrid
-            rows:       paramController.diffList.count + 1
-            columns:    paramController.diffMultipleComponents ? 5 : 4
-            flow:       GridLayout.TopToBottom
-            visible:    paramController.diffList.count
+            id:             mainGrid
+            objectName:     "diffGrid"
+            rows:           paramController.diffList.count + 1
+            columns:        paramController.diffMultipleComponents ? 5 : 4
+            flow:           GridLayout.TopToBottom
+            rowSpacing:     0
+            columnSpacing:  ScreenTools.defaultFontPixelWidth
+            visible:        paramController.diffList.count
 
             QGCCheckBox {
+                objectName: "diffCheckAllCheckbox"
                 checked: true
                 onClicked: {
                     for (var i=0; i<paramController.diffList.count; i++) {
-                        paramController.diffList.get(i).load = checked
+                        var paramDiff = paramController.diffList.get(i)
+                        if (!paramDiff.cannotSend) {
+                            paramDiff.load = checked
+                        }
                     }
                 }
             }
             Repeater {
                 model: paramController.diffList
                 QGCCheckBox {
+                    objectName: "diffRowCheckbox_" + (paramController.diffMultipleComponents ? object.componentId + "_" : "") + object.name
+                    enabled:    !object.cannotSend
                     checked:    object.load
                     onClicked:  object.load = checked
                 }
@@ -84,14 +122,42 @@ QGCPopupDialog {
             QGCLabel { text: qsTr("File") }
             Repeater {
                 model: paramController.diffList
-                QGCLabel { text: object.fileValue + " " + object.units }
+                QGCLabel { text: object.invalidFileValue ? qsTr("%1 — invalid").arg(object.fileValue) : object.fileValue + " " + object.units }
             }
 
             QGCLabel { text: qsTr("Vehicle") }
             Repeater {
                 model: paramController.diffList
-                QGCLabel { text: object.noVehicleValue ? qsTr("N/A") : object.vehicleValue + " " + object.units }
+                QGCLabel {
+                    text: object.noVehicleValue ? qsTr("N/A — new to Vehicle") :
+                          (object.cannotSend && !object.invalidFileValue) ? qsTr("N/A — not on Vehicle") :
+                          object.vehicleValue + " " + object.units
+                }
             }
+        }
+
+        QGCLabel {
+            objectName:             "diffNoVehicleHintLabel"
+            Layout.preferredWidth:  summaryLabel.Layout.preferredWidth
+            wrapMode:               Text.WordWrap
+            visible:                paramController.diffNoVehicleCount > 0
+            text:                   qsTr("Parameters marked 'new to Vehicle' have not been reported by the Vehicle. They may only become visible after they are sent and the Vehicle is rebooted.")
+        }
+
+        QGCLabel {
+            objectName:             "diffCannotSendHintLabel"
+            Layout.preferredWidth:  summaryLabel.Layout.preferredWidth
+            wrapMode:               Text.WordWrap
+            visible:                paramController.diffMissingParams.length > 0
+            text:                   qsTr("Parameters marked 'not on Vehicle' cannot be sent since the file does not include type information. They may only exist after another parameter is changed and the Vehicle is rebooted, after which you can load this file again.")
+        }
+
+        QGCLabel {
+            objectName:             "diffInvalidHintLabel"
+            Layout.preferredWidth:  summaryLabel.Layout.preferredWidth
+            wrapMode:               Text.WordWrap
+            visible:                paramController.diffInvalidParams.length > 0
+            text:                   qsTr("Parameters marked 'invalid' have a value in the file that cannot be converted to the parameter's type on the Vehicle. They will not be sent.")
         }
     }
 }

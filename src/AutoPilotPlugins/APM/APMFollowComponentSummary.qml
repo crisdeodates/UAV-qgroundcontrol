@@ -1,58 +1,51 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.Palette       1.0
+import QGroundControl
+import QGroundControl.FactControls
+import QGroundControl.Controls
 
 Item {
-    anchors.fill:   parent
+    implicitWidth: mainLayout.implicitWidth
+    implicitHeight: mainLayout.implicitHeight
+    width: parent.width  // grows when Loader is wider than implicitWidth
 
-    FactPanelController { id: controller; }
+    FactPanelController { id: controller }
 
-    property Fact _batt1Monitor:            controller.getParameterFact(-1, "BATT_MONITOR")
-    property Fact _batt2Monitor:            controller.getParameterFact(-1, "BATT2_MONITOR", false /* reportMissing */)
-    property bool _batt2MonitorAvailable:   controller.parameterExists(-1, "BATT2_MONITOR")
-    property bool _batt1MonitorEnabled:     _batt1Monitor.rawValue !== 0
-    property bool _batt2MonitorEnabled:     _batt2MonitorAvailable && _batt2Monitor.rawValue !== 0
-    property Fact _battCapacity:            controller.getParameterFact(-1, "BATT_CAPACITY", false /* reportMissing */)
-    property Fact _batt2Capacity:           controller.getParameterFact(-1, "BATT2_CAPACITY", false /* reportMissing */)
-    property bool _battCapacityAvailable:   controller.parameterExists(-1, "BATT_CAPACITY")
+    function getFact(name) {
+        return controller.getParameterFact(-1, name, false)
+    }
 
-    Column {
-        anchors.fill:       parent
+    property bool followParamsAvailable: controller.parameterExists(-1, "FOLL_SYSID")
 
-        VehicleSummaryRow {
-            labelText: qsTr("Batt1 monitor")
-            valueText: _batt1Monitor.enumStringValue
-        }
+    property var followItems: [
+        { label: qsTr("Follow Enabled"),    fact: getFact("FOLL_ENABLE"),       visible: true},
+        { label: qsTr("Follow System ID"),  fact: getFact("FOLL_SYSID"),        visible: followParamsAvailable },
+        { label: qsTr("Max Distance"),      fact: getFact("FOLL_DIST_MAX"),     visible: followParamsAvailable },
+        { label: qsTr("Offset X"),          fact: getFact("FOLL_OFS_X"),        visible: followParamsAvailable },
+        { label: qsTr("Offset Y"),          fact: getFact("FOLL_OFS_Y"),        visible: followParamsAvailable },
+        { label: qsTr("Offset Z"),          fact: getFact("FOLL_OFS_Z"),        visible: followParamsAvailable },
+        { label: qsTr("Offset Type"),       fact: getFact("FOLL_OFS_TYPE"),     visible: followParamsAvailable },
+        { label: qsTr("Altitude Type"),     fact: getFact("FOLL_ALT_TYPE"),     visible: followParamsAvailable },
+        { label: qsTr("Yaw Behavior"),      fact: getFact("FOLL_YAW_BEHAVE"),   visible: followParamsAvailable }
+    ]
 
-        VehicleSummaryRow {
-            labelText: qsTr("Batt1 capacity")
-            valueText:  _batt1MonitorEnabled ? _battCapacity.valueString + " " + _battCapacity.units : ""
-            visible:    _batt1MonitorEnabled
-        }
+    ColumnLayout {
+        id: mainLayout
+        spacing: 0
 
-        VehicleSummaryRow {
-            labelText:  qsTr("Batt2 monitor")
-            valueText:  _batt2MonitorAvailable ? _batt2Monitor.enumStringValue : ""
-            visible:    _batt2MonitorAvailable
-        }
+        Repeater {
+            model: followItems
+            delegate: VehicleSummaryRow {
+                labelText: modelData.label
+                valueText: formatFact(modelData.fact)
+                visible: modelData.visible
 
-        VehicleSummaryRow {
-            labelText:  qsTr("Batt2 capacity")
-            valueText:  _batt2MonitorEnabled ? _batt2Capacity.valueString + " " + _batt2Capacity.units : ""
-            visible:    _batt2MonitorEnabled
+                function formatFact(fact) {
+                    return (fact && (fact.enumStringValue || (fact.valueString + " " + fact.units)))
+                }
+            }
         }
     }
 }

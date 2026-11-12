@@ -1,20 +1,7 @@
-/****************************************************************************
- *
- * (c) 2009-2019 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- * @file
- *   @author Gus Grubba <gus@auterion.com>
- */
+import QtQuick
+import QtQuick.Controls
 
-import QtQuick                      2.11
-import QtQuick.Controls             2.4
-
-import QGroundControl.Controls      1.0
-import QGroundControl.Palette       1.0
-import QGroundControl.ScreenTools   1.0
+import QGroundControl.Controls
 
 Button {
     id:                             button
@@ -22,7 +9,7 @@ Button {
 
     background: Rectangle {
         anchors.fill:               parent
-        color:                      qgcPal.buttonHighlight
+        color:                      qgcPal.accent
         visible:                    (mouseArea.pressed || button.checked)
     }
 
@@ -41,7 +28,7 @@ Button {
             width:                  height
             sourceSize.height:      parent.height
             fillMode:               Image.PreserveAspectFit
-            color:                  qgcPal.buttonText
+            color:                  qgcPal.textPrimary
             source:                 button.icon.source
             anchors.verticalCenter: parent.verticalCenter
         }
@@ -49,7 +36,7 @@ Button {
             id:                     _label
             visible:                text !== ""
             text:                   button.text
-            color:                  qgcPal.buttonText
+            color:                  qgcPal.textPrimary
             anchors.verticalCenter: parent.verticalCenter
         }
     }

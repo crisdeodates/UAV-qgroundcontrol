@@ -1,192 +1,237 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "ADSBVehicleManager.h"
-#include "QGCLoggingCategory.h"
-#include "QGCApplication.h"
+#include "MAVLinkLib.h"
+#include "AppMessages.h"
 #include "SettingsManager.h"
 #include "ADSBVehicleManagerSettings.h"
+#include "ADSBTCPLink.h"
+#include "ADSBVehicle.h"
+#include "QmlObjectListModel.h"
+#include "QGCLoggingCategory.h"
 
-#include <QDebug>
+#include <QtCore/QApplicationStatic>
+#include <QtCore/QThread>
+#include <QtCore/QTimer>
 
-ADSBVehicleManager::ADSBVehicleManager(QGCApplication* app, QGCToolbox* toolbox)
-    : QGCTool(app, toolbox)
+QGC_LOGGING_CATEGORY(ADSBVehicleManagerLog, "ADSB.ADSBVehicleManager")
+
+Q_APPLICATION_STATIC(ADSBVehicleManager, _adsbVehicleManager, SettingsManager::instance()->adsbVehicleManagerSettings());
+
+ADSBVehicleManager::ADSBVehicleManager(ADSBVehicleManagerSettings *settings, QObject *parent)
+    : QObject(parent)
+    , _adsbSettings(settings)
+    , _adsbVehicleCleanupTimer(new QTimer(this))
+    , _adsbVehicles(new QmlObjectListModel(this))
 {
+    // qCDebug(ADSBVehicleManagerLog) << Q_FUNC_INFO << this;
+
+    (void) qRegisterMetaType<ADSB::VehicleInfo_t>("ADSB::VehicleInfo_t");
+
+    _adsbVehicleCleanupTimer->setSingleShot(false);
+    _adsbVehicleCleanupTimer->setInterval(1000);
+    (void) connect(_adsbVehicleCleanupTimer, &QTimer::timeout, this, &ADSBVehicleManager::_cleanupStaleVehicles);
+    // Always run: vehicles can also arrive via mavlink messages, not just the tcp link
+    _adsbVehicleCleanupTimer->start();
+
+    Fact* const adsbEnabled = _adsbSettings->adsbServerConnectEnabled();
+    Fact* const hostAddress = _adsbSettings->adsbServerHostAddress();
+    Fact* const port = _adsbSettings->adsbServerPort();
+
+    (void) connect(adsbEnabled, &Fact::rawValueChanged, this, [this, hostAddress, port](QVariant value) {
+        if (value.toBool()) {
+            _start(hostAddress->rawValue().toString(), port->rawValue().toUInt());
+        } else {
+            _stop();
+        }
+    });
+
+    if (adsbEnabled->rawValue().toBool()) {
+        _start(hostAddress->rawValue().toString(), port->rawValue().toUInt());
+    }
 }
 
-void ADSBVehicleManager::setToolbox(QGCToolbox* toolbox)
+ADSBVehicleManager::~ADSBVehicleManager()
 {
-    QGCTool::setToolbox(toolbox);
+    _stop();
 
-    connect(&_adsbVehicleCleanupTimer, &QTimer::timeout, this, &ADSBVehicleManager::_cleanupStaleVehicles);
-    _adsbVehicleCleanupTimer.setSingleShot(false);
-    _adsbVehicleCleanupTimer.start(1000);
+    // qCDebug(ADSBVehicleManagerLog) << Q_FUNC_INFO << this;
+}
 
-    ADSBVehicleManagerSettings* settings = qgcApp()->toolbox()->settingsManager()->adsbVehicleManagerSettings();
-    if (settings->adsbServerConnectEnabled()->rawValue().toBool()) {
-        _tcpLink = new ADSBTCPLink(settings->adsbServerHostAddress()->rawValue().toString(), settings->adsbServerPort()->rawValue().toInt(), this);
-        connect(_tcpLink, &ADSBTCPLink::adsbVehicleUpdate,  this, &ADSBVehicleManager::adsbVehicleUpdate,   Qt::QueuedConnection);
-        connect(_tcpLink, &ADSBTCPLink::error,              this, &ADSBVehicleManager::_tcpError,           Qt::QueuedConnection);
+ADSBVehicleManager *ADSBVehicleManager::instance()
+{
+    return _adsbVehicleManager();
+}
+
+void ADSBVehicleManager::mavlinkMessageReceived(const mavlink_message_t &message)
+{
+    if (message.msgid != MAVLINK_MSG_ID_ADSB_VEHICLE) {
+        return;
     }
+
+    _handleADSBVehicle(message);
+}
+
+void ADSBVehicleManager::_handleADSBVehicle(const mavlink_message_t &message)
+{
+    mavlink_adsb_vehicle_t adsbVehicleMsg{};
+    mavlink_msg_adsb_vehicle_decode(&message, &adsbVehicleMsg);
+
+    if (adsbVehicleMsg.tslc > kMaxTimeSinceLastSeen) {
+        return;
+    }
+
+    ADSB::VehicleInfo_t vehicleInfo{};
+
+    vehicleInfo.availableFlags = ADSB::AvailableInfoTypes::fromInt(0);
+
+    vehicleInfo.icaoAddress = adsbVehicleMsg.ICAO_address;
+    vehicleInfo.lastContact = adsbVehicleMsg.tslc;
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_COORDS) {
+        vehicleInfo.availableFlags |= ADSB::LocationAvailable;
+        vehicleInfo.location.setLatitude(adsbVehicleMsg.lat / 1e7);
+        vehicleInfo.location.setLongitude(adsbVehicleMsg.lon / 1e7);
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_ALTITUDE) {
+        vehicleInfo.availableFlags |= ADSB::AltitudeAvailable;
+        vehicleInfo.location.setAltitude(adsbVehicleMsg.altitude / 1e3);
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_HEADING) {
+        vehicleInfo.availableFlags |= ADSB::HeadingAvailable;
+        vehicleInfo.heading = adsbVehicleMsg.heading / 1e2;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_VELOCITY) {
+        vehicleInfo.availableFlags |= ADSB::VelocityAvailable;
+        vehicleInfo.velocity = adsbVehicleMsg.hor_velocity / 1e2;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_CALLSIGN) {
+        vehicleInfo.availableFlags |= ADSB::CallsignAvailable;
+        vehicleInfo.callsign = QString::fromLatin1(adsbVehicleMsg.callsign, sizeof(adsbVehicleMsg.callsign));
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VALID_SQUAWK) {
+        vehicleInfo.availableFlags |= ADSB::SquawkAvailable;
+        vehicleInfo.squawk = adsbVehicleMsg.squawk;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_SIMULATED) {
+        vehicleInfo.simulated = true;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_VERTICAL_VELOCITY_VALID) {
+        vehicleInfo.availableFlags |= ADSB::VerticalVelAvailable;
+        vehicleInfo.verticalVel = adsbVehicleMsg.ver_velocity;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_BARO_VALID) {
+        vehicleInfo.baro = true;
+    }
+
+    if (adsbVehicleMsg.flags & ADSB_FLAGS_SOURCE_UAT) {
+
+    }
+
+    adsbVehicleMsg.altitude_type = adsbVehicleMsg.altitude_type;
+    adsbVehicleMsg.emitter_type = adsbVehicleMsg.emitter_type;
+
+    adsbVehicleUpdate(vehicleInfo);
+}
+
+void ADSBVehicleManager::adsbVehicleUpdate(const ADSB::VehicleInfo_t &vehicleInfo)
+{
+    const uint32_t icaoAddress = vehicleInfo.icaoAddress;
+    if (_adsbICAOMap.contains(icaoAddress)) {
+        _adsbICAOMap[icaoAddress]->update(vehicleInfo);
+        return;
+    }
+
+    if (vehicleInfo.availableFlags & ADSB::LocationAvailable) {
+        ADSBVehicle* const adsbVehicle = new ADSBVehicle(vehicleInfo, this);
+        _adsbICAOMap[icaoAddress] = adsbVehicle;
+        _adsbVehicles->append(adsbVehicle);
+        qCDebug(ADSBVehicleManagerLog) << "Added" << QString::number(adsbVehicle->icaoAddress());
+    }
+}
+
+void ADSBVehicleManager::_start(const QString &hostAddress, quint16 port)
+{
+    if (_adsbTcpLink) {
+        qCWarning(ADSBVehicleManagerLog) << "TCP Link already started";
+        return;
+    }
+
+    if (hostAddress.isEmpty()) {
+        qCWarning(ADSBVehicleManagerLog) << "No ADSB server host address set";
+        return;
+    }
+
+    // Run the link on a worker thread so socket reads and SBS-1 parsing stay off the ui thread.
+    // The thread is unparented so QObject parent-child destruction can never delete it while it
+    // is still running (which is fatal); _stop() manages its lifetime explicitly.
+    _adsbTcpLinkThread = new QThread();
+    _adsbTcpLinkThread->setObjectName(QStringLiteral("ADSBTCPLink"));
+
+    _adsbTcpLink = new ADSBTCPLink(hostAddress, port); // unparented, deleted when the thread finishes
+    _adsbTcpLink->moveToThread(_adsbTcpLinkThread);
+
+    (void) connect(_adsbTcpLinkThread, &QThread::started, _adsbTcpLink, &ADSBTCPLink::init);
+    (void) connect(_adsbTcpLinkThread, &QThread::finished, _adsbTcpLink, &QObject::deleteLater);
+    (void) connect(_adsbTcpLink, &ADSBTCPLink::adsbVehicleUpdate, this, &ADSBVehicleManager::adsbVehicleUpdate, Qt::QueuedConnection);
+    (void) connect(_adsbTcpLink, &ADSBTCPLink::errorOccurred, this, &ADSBVehicleManager::_linkError, Qt::QueuedConnection);
+
+    _adsbTcpLinkThread->start();
+}
+
+void ADSBVehicleManager::_stop()
+{
+    if (!_adsbTcpLinkThread) {
+        return;
+    }
+
+    _adsbTcpLinkThread->quit();
+    if (!_adsbTcpLinkThread->wait(kThreadStopTimeoutMs)) {
+        // Bail out without deleting or resetting state: destroying a still-running QThread is
+        // fatal, and clearing the pointers would allow a second link to be started alongside it.
+        qCWarning(ADSBVehicleManagerLog) << "ADSBTCPLink thread failed to stop";
+        return;
+    }
+    // wait() succeeded so the thread has finished: delete it directly rather than with
+    // deleteLater(), which would leak during shutdown once the event loop stops running.
+    delete _adsbTcpLinkThread;
+    _adsbTcpLinkThread = nullptr;
+    _adsbTcpLink = nullptr; // deleted via the thread finished connection
+
+    _adsbVehicles->clearAndDeleteContents();
+    _adsbICAOMap.clear();
 }
 
 void ADSBVehicleManager::_cleanupStaleVehicles()
 {
-    // Remove all expired ADSB vehicles
-    for (int i=_adsbVehicles.count()-1; i>=0; i--) {
-        ADSBVehicle* adsbVehicle = _adsbVehicles.value<ADSBVehicle*>(i);
+    for (qsizetype i = _adsbVehicles->count() - 1; i >= 0; i--) {
+        ADSBVehicle* const adsbVehicle = _adsbVehicles->value<ADSBVehicle*>(i);
         if (adsbVehicle->expired()) {
-            qCDebug(ADSBVehicleManagerLog) << "Expired" << QStringLiteral("%1").arg(adsbVehicle->icaoAddress(), 0, 16);
-            _adsbVehicles.removeAt(i);
-            _adsbICAOMap.remove(adsbVehicle->icaoAddress());
+            qCDebug(ADSBVehicleManagerLog) << "Expired" << QString::number(adsbVehicle->icaoAddress());
+            (void) _adsbVehicles->removeAt(i);
+            (void) _adsbICAOMap.remove(adsbVehicle->icaoAddress());
             adsbVehicle->deleteLater();
         }
     }
 }
 
-void ADSBVehicleManager::adsbVehicleUpdate(const ADSBVehicle::VehicleInfo_t vehicleInfo)
+void ADSBVehicleManager::_linkError(const QString &errorMsg, bool stopped)
 {
-    uint32_t icaoAddress = vehicleInfo.icaoAddress;
+    qCDebug(ADSBVehicleManagerLog) << errorMsg;
 
-    if (_adsbICAOMap.contains(icaoAddress)) {
-        _adsbICAOMap[icaoAddress]->update(vehicleInfo);
-    } else {
-        if (vehicleInfo.availableFlags & ADSBVehicle::LocationAvailable) {
-            ADSBVehicle* adsbVehicle = new ADSBVehicle(vehicleInfo, this);
-            _adsbICAOMap[icaoAddress] = adsbVehicle;
-            _adsbVehicles.append(adsbVehicle);
-        }
-    }
-}
+    QString msg = tr("ADSB Server Error: %1").arg(errorMsg);
 
-void ADSBVehicleManager::_tcpError(const QString errorMsg)
-{
-    qgcApp()->showAppMessage(tr("ADSB Server Error: %1").arg(errorMsg));
-}
-
-
-ADSBTCPLink::ADSBTCPLink(const QString& hostAddress, int port, QObject* parent)
-    : QThread       (parent)
-    , _hostAddress  (hostAddress)
-    , _port         (port)
-{
-    moveToThread(this);
-    start();
-}
-
-ADSBTCPLink::~ADSBTCPLink(void)
-{
-    if (_socket) {
-        QObject::disconnect(_socket, &QTcpSocket::readyRead, this, &ADSBTCPLink::_readBytes);
-        _socket->disconnectFromHost();
-        _socket->deleteLater();
-        _socket = nullptr;
-    }
-    quit();
-    wait();
-}
-
-void ADSBTCPLink::run(void)
-{
-    _hardwareConnect();
-    exec();
-}
-
-void ADSBTCPLink::_hardwareConnect()
-{
-    _socket = new QTcpSocket();
-
-    QObject::connect(_socket, &QTcpSocket::readyRead, this, &ADSBTCPLink::_readBytes);
-
-    _socket->connectToHost(_hostAddress, static_cast<quint16>(_port));
-
-    // Give the socket a second to connect to the other side otherwise error out
-    if (!_socket->waitForConnected(1000)) {
-        qCDebug(ADSBVehicleManagerLog) << "ADSB Socket failed to connect";
-        emit error(_socket->errorString());
-        delete _socket;
-        _socket = nullptr;
-        return;
+    if (stopped) {
+        (void) msg.append(QLatin1Char('\n'));
+        (void) msg.append(tr("ADSB has been disabled"));
+        _adsbSettings->adsbServerConnectEnabled()->setRawValue(false);
     }
 
-    qCDebug(ADSBVehicleManagerLog) << "ADSB Socket connected";
-}
-
-void ADSBTCPLink::_readBytes(void)
-{
-    if (_socket) {
-        QByteArray bytes = _socket->readLine();
-        _parseLine(QString::fromLocal8Bit(bytes));
-    }
-}
-
-void ADSBTCPLink::_parseLine(const QString& line)
-{
-    if (line.startsWith(QStringLiteral("MSG"))) {
-        qCDebug(ADSBVehicleManagerLog) << "ADSB SBS-1" << line;
-
-        QStringList values = line.split(QStringLiteral(","));
-
-        if (values[1] == QStringLiteral("3")) {
-            bool icaoOk, altOk, latOk, lonOk;
-
-            uint32_t    icaoAddress =   values[4].toUInt(&icaoOk, 16);
-            int         modeCAltitude = values[11].toInt(&altOk);
-            double      lat =           values[14].toDouble(&latOk);
-            double      lon =           values[15].toDouble(&lonOk);
-            QString     callsign =      values[10];
-
-            if (!icaoOk || !altOk || !latOk || !lonOk) {
-                return;
-            }
-            if (lat == 0 && lon == 0) {
-                return;
-            }
-
-            double altitude = modeCAltitude / 3.048;
-            QGeoCoordinate location(lat, lon);
-
-            ADSBVehicle::VehicleInfo_t adsbInfo;
-            adsbInfo.icaoAddress = icaoAddress;
-            adsbInfo.callsign = callsign;
-            adsbInfo.location = location;
-            adsbInfo.altitude = altitude;
-            adsbInfo.availableFlags = ADSBVehicle::CallsignAvailable | ADSBVehicle::LocationAvailable | ADSBVehicle::AltitudeAvailable;
-            emit adsbVehicleUpdate(adsbInfo);
-        } else if (values[1] == QStringLiteral("4")) {
-            bool icaoOk, headingOk;
-
-            uint32_t    icaoAddress =   values[4].toUInt(&icaoOk, 16);
-            double      heading =       values[13].toDouble(&headingOk);
-
-            if (!icaoOk || !headingOk) {
-                return;
-            }
-
-            ADSBVehicle::VehicleInfo_t adsbInfo;
-            adsbInfo.icaoAddress = icaoAddress;
-            adsbInfo.heading = heading;
-            adsbInfo.availableFlags = ADSBVehicle::HeadingAvailable;
-            emit adsbVehicleUpdate(adsbInfo);
-        } else if (values[1] == QStringLiteral("1")) {
-            bool icaoOk;
-
-            uint32_t icaoAddress = values[4].toUInt(&icaoOk, 16);
-            if (!icaoOk) {
-                return;
-            }
-
-            ADSBVehicle::VehicleInfo_t adsbInfo;
-            adsbInfo.icaoAddress = icaoAddress;
-            adsbInfo.callsign = values[10];
-            adsbInfo.availableFlags = ADSBVehicle::CallsignAvailable;
-            emit adsbVehicleUpdate(adsbInfo);
-        }
-    }
+    QGC::showAppMessage(msg);
 }

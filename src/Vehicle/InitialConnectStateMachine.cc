@@ -1,403 +1,524 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #include "InitialConnectStateMachine.h"
+#include "MAVLinkLib.h"
 #include "Vehicle.h"
+#include "VehicleLinkManager.h"
 #include "QGCCorePlugin.h"
 #include "QGCOptions.h"
 #include "FirmwarePlugin.h"
 #include "ParameterManager.h"
 #include "ComponentInformationManager.h"
 #include "MissionManager.h"
+#include "StandardModes.h"
+#include "GeoFenceManager.h"
+#include "RallyPointManager.h"
+#include "QGCLoggingCategory.h"
+#include "SettingsManager.h"
+#include "MavlinkSettings.h"
 
-QGC_LOGGING_CATEGORY(InitialConnectStateMachineLog, "InitialConnectStateMachineLog")
+#include <cstring>
 
-const StateMachine::StateFn InitialConnectStateMachine::_rgStates[] = {
-    InitialConnectStateMachine::_stateRequestCapabilities,
-    InitialConnectStateMachine::_stateRequestProtocolVersion,
-    InitialConnectStateMachine::_stateRequestCompInfo,
-    InitialConnectStateMachine::_stateRequestParameters,
-    InitialConnectStateMachine::_stateRequestMission,
-    InitialConnectStateMachine::_stateRequestGeoFence,
-    InitialConnectStateMachine::_stateRequestRallyPoints,
-    InitialConnectStateMachine::_stateSignalInitialConnectComplete
-};
+QGC_LOGGING_CATEGORY(InitialConnectStateMachineLog, "Vehicle.InitialConnectStateMachine")
 
-const int InitialConnectStateMachine::_rgProgressWeights[] = {
-    1, //_stateRequestCapabilities
-    1, //_stateRequestProtocolVersion
-    5, //_stateRequestCompInfo
-    5, //_stateRequestParameters
-    2, //_stateRequestMission
-    1, //_stateRequestGeoFence
-    1, //_stateRequestRallyPoints
-    1, //_stateSignalInitialConnectComplete
-};
+// ============================================================================
+// InitialConnectStateMachine Implementation
+// ============================================================================
 
-
-const int InitialConnectStateMachine::_cStates = sizeof(InitialConnectStateMachine::_rgStates) / sizeof(InitialConnectStateMachine::_rgStates[0]);
-
-InitialConnectStateMachine::InitialConnectStateMachine(Vehicle* vehicle)
-    : _vehicle(vehicle)
+InitialConnectStateMachine::InitialConnectStateMachine(Vehicle* vehicle, QObject* parent)
+    : QGCStateMachine(QStringLiteral("InitialConnectStateMachine"), vehicle, parent)
 {
-    static_assert(sizeof(_rgStates)/sizeof(_rgStates[0]) == sizeof(_rgProgressWeights)/sizeof(_rgProgressWeights[0]),
-            "array size mismatch");
+    _createStates();
+    _wireTransitions();
+    _wireProgressTracking();
 
-    _progressWeightTotal = 0;
-    for (int i = 0; i < _cStates; ++i) {
-        _progressWeightTotal += _rgProgressWeights[i];
-    }
+    setInitialState(_stateAutopilotVersion);
 }
 
-int InitialConnectStateMachine::stateCount(void) const
+InitialConnectStateMachine::~InitialConnectStateMachine()
 {
-    return _cStates;
 }
 
-const InitialConnectStateMachine::StateFn* InitialConnectStateMachine::rgStates(void) const
+void InitialConnectStateMachine::start()
 {
-    return &_rgStates[0];
+    resetProgress();
+    QGCStateMachine::start();
 }
 
-void InitialConnectStateMachine::statesCompleted(void) const
+void InitialConnectStateMachine::_createStates()
 {
+    // State 0: Request autopilot version
+    _stateAutopilotVersion = new RetryableRequestMessageState(
+        QStringLiteral("RequestAutopilotVersion"),
+        this,
+        MAVLINK_MSG_ID_AUTOPILOT_VERSION,
+        [this](Vehicle*, const mavlink_message_t& message) {
+            _handleAutopilotVersionSuccess(message);
+        },
+        _autopilotVersionMaxRetries,
+        MAV_COMP_ID_AUTOPILOT1
+    );
+    _stateAutopilotVersion->setSkipPredicate([this]() {
+        return _shouldSkipAutopilotVersionRequest();
+    });
+    _stateAutopilotVersion->setFailureHandler([this](auto, auto) {
+        _handleAutopilotVersionFailure();
+    });
 
-}
+    // State 1: Request standard modes
+    // No timeout: download duration varies too much with link speed and mode count.
+    // The standard modes protocol handles all timeouts internally and always signals completion.
+    _stateStandardModes = new AsyncFunctionState(
+        QStringLiteral("RequestStandardModes"),
+        this,
+        [this](AsyncFunctionState* state) { _requestStandardModes(state); }
+    );
 
-void InitialConnectStateMachine::advance()
-{
-    StateMachine::advance();
-    emit progressUpdate(_progress());
-}
+    // State 2: Request component information
+    // No timeout: ComponentInformationManager's nested state machines have per-state
+    // timeouts on every step and always signal completion.
+    _stateCompInfo = new AsyncFunctionState(
+        QStringLiteral("RequestCompInfo"),
+        this,
+        [this](AsyncFunctionState* state) { _requestCompInfo(state); }
+    );
 
-void InitialConnectStateMachine::gotProgressUpdate(float progressValue)
-{
-    emit progressUpdate(_progress(progressValue));
-}
-
-float InitialConnectStateMachine::_progress(float subProgress)
-{
-    int progressWeight = 0;
-    for (int i = 0; i < _stateIndex && i < _cStates; ++i) {
-        progressWeight += _rgProgressWeights[i];
-    }
-    int currentWeight = _stateIndex < _cStates ? _rgProgressWeights[_stateIndex] : 1;
-    return (progressWeight + currentWeight * subProgress) / (float)_progressWeightTotal;
-}
-
-void InitialConnectStateMachine::_stateRequestCapabilities(StateMachine* stateMachine)
-{
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-    WeakLinkInterfacePtr        weakLink        = vehicle->vehicleLinkManager()->primaryLink();
-
-    if (weakLink.expired()) {
-        qCDebug(InitialConnectStateMachineLog) << "_stateRequestCapabilities Skipping capability request due to no primary link";
-        connectMachine->advance();
-    } else {
-        SharedLinkInterfacePtr sharedLink = weakLink.lock();
-
-        if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isPX4Flow() || sharedLink->isLogReplay()) {
-            qCDebug(InitialConnectStateMachineLog) << "Skipping capability request due to link type";
-            connectMachine->advance();
-        } else {
-            qCDebug(InitialConnectStateMachineLog) << "Requesting capabilities";
-            vehicle->_waitForMavlinkMessage(_waitForAutopilotVersionResultHandler, connectMachine, MAVLINK_MSG_ID_AUTOPILOT_VERSION, 1000);
-            vehicle->sendMavCommandWithHandler(_capabilitiesCmdResultHandler,
-                                               connectMachine,
-                                               MAV_COMP_ID_AUTOPILOT1,
-                                               MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES,
-                                               1);                                      // Request firmware version
-        }
-    }
-}
-
-void InitialConnectStateMachine::_capabilitiesCmdResultHandler(void* resultHandlerData, int /*compId*/, MAV_RESULT result, Vehicle::MavCmdResultFailureCode_t failureCode)
-{
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(resultHandlerData);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-
-    if (result != MAV_RESULT_ACCEPTED) {
-        switch (failureCode) {
-        case Vehicle::MavCmdResultCommandResultOnly:
-            qCDebug(InitialConnectStateMachineLog) << QStringLiteral("MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES error(%1)").arg(result);
-            break;
-        case Vehicle::MavCmdResultFailureNoResponseToCommand:
-            qCDebug(InitialConnectStateMachineLog) << "MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES no response from vehicle";
-            break;
-        case Vehicle::MavCmdResultFailureDuplicateCommand:
-            qCDebug(InitialConnectStateMachineLog) << "Internal Error: MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES could not be sent due to duplicate command";
-            break;
-        }
-
-        qCDebug(InitialConnectStateMachineLog) << "Setting no capabilities";
-        vehicle->_setCapabilities(0);
-        vehicle->_waitForMavlinkMessageClear();
-        connectMachine->advance();
-    }
-}
-
-void InitialConnectStateMachine::_waitForAutopilotVersionResultHandler(void* resultHandlerData, bool noResponsefromVehicle, const mavlink_message_t& message)
-{
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(resultHandlerData);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-
-    if (noResponsefromVehicle) {
-        qCDebug(InitialConnectStateMachineLog) << "AUTOPILOT_VERSION timeout";
-        qCDebug(InitialConnectStateMachineLog) << "Setting no capabilities";
-        vehicle->_setCapabilities(0);
-    } else {
-        qCDebug(InitialConnectStateMachineLog) << "AUTOPILOT_VERSION received";
-
-        mavlink_autopilot_version_t autopilotVersion;
-        mavlink_msg_autopilot_version_decode(&message, &autopilotVersion);
-
-        vehicle->_uid = (quint64)autopilotVersion.uid;
-        emit vehicle->vehicleUIDChanged();
-
-        if (autopilotVersion.flight_sw_version != 0) {
-            int majorVersion, minorVersion, patchVersion;
-            FIRMWARE_VERSION_TYPE versionType;
-
-            majorVersion = (autopilotVersion.flight_sw_version >> (8*3)) & 0xFF;
-            minorVersion = (autopilotVersion.flight_sw_version >> (8*2)) & 0xFF;
-            patchVersion = (autopilotVersion.flight_sw_version >> (8*1)) & 0xFF;
-            versionType = (FIRMWARE_VERSION_TYPE)((autopilotVersion.flight_sw_version >> (8*0)) & 0xFF);
-            vehicle->setFirmwareVersion(majorVersion, minorVersion, patchVersion, versionType);
-        }
-
-        if (vehicle->px4Firmware()) {
-            // Lower 3 bytes is custom version
-            int majorVersion, minorVersion, patchVersion;
-            majorVersion = autopilotVersion.flight_custom_version[2];
-            minorVersion = autopilotVersion.flight_custom_version[1];
-            patchVersion = autopilotVersion.flight_custom_version[0];
-            vehicle->setFirmwareCustomVersion(majorVersion, minorVersion, patchVersion);
-
-            // PX4 Firmware stores the first 16 characters of the git hash as binary, with the individual bytes in reverse order
-            vehicle->_gitHash = "";
-            for (int i = 7; i >= 0; i--) {
-                vehicle->_gitHash.append(QString("%1").arg(autopilotVersion.flight_custom_version[i], 2, 16, QChar('0')));
+    // State 3: Request parameters (skippable)
+    // No timeout: download duration varies too much with link speed and param count.
+    // ParameterManager handles all timeouts internally and always terminates via
+    // parametersReadyChanged or initialParametersRequestFailed.
+    _stateParameters = new SkippableAsyncState(
+        QStringLiteral("RequestParameters"), this,
+        [this]() {
+            if (_shouldSkipForArmed()) {
+                // PX4 can try a lightweight hash-check cache load
+                if (vehicle()->px4Firmware()) {
+                    return false;
+                }
+                _lastSkipReason = QStringLiteral("(vehicle is armed)");
+                return true;
             }
-        } else {
-            // APM Firmware stores the first 8 characters of the git hash as an ASCII character string
-            char nullStr[9];
-            strncpy(nullStr, (char*)autopilotVersion.flight_custom_version, 8);
-            nullStr[8] = 0;
-            vehicle->_gitHash = nullStr;
-        }
-        if (vehicle->_toolbox->corePlugin()->options()->checkFirmwareVersion() && !vehicle->_checkLatestStableFWDone) {
-            vehicle->_checkLatestStableFWDone = true;
-            vehicle->_firmwarePlugin->checkIfIsLatestStable(vehicle);
-        }
-        emit vehicle->gitHashChanged(vehicle->_gitHash);
+            return false;
+        },
+        [this](SkippableAsyncState* state) { _requestParameters(state); },
+        [this]() {
+            qCDebug(InitialConnectStateMachineLog) << "Skipping parameter download" << _lastSkipReason;
+            vehicle()->_parameterManager->setParameterDownloadSkipped(true);
+        });
 
-        vehicle->_setCapabilities(autopilotVersion.capabilities);
-    }
-    connectMachine->advance();
+    // State 4: Request mission (skippable)
+    // No timeout: PlanManager handles all timeouts/retries internally and always signals completion.
+    _stateMission = new SkippableAsyncState(
+        QStringLiteral("RequestMission"),
+        this,
+        [this]() { return _shouldSkipForPlanLoad(); },
+        [this](SkippableAsyncState* state) { _requestMission(state); },
+        [this]() {
+            qCDebug(InitialConnectStateMachineLog) << "Skipping mission load" << _lastSkipReason;
+        }
+    );
+
+    // State 5: Request geofence (skippable)
+    // No timeout: PlanManager handles all timeouts/retries internally and always signals completion.
+    _stateGeoFence = new SkippableAsyncState(
+        QStringLiteral("RequestGeoFence"),
+        this,
+        [this]() {
+            if (_shouldSkipForPlanLoad()) {
+                return true;
+            }
+            if (!vehicle()->_geoFenceManager->supported()) {
+                _lastSkipReason = QStringLiteral("(not supported by vehicle)");
+                return true;
+            }
+            return false;
+        },
+        [this](SkippableAsyncState* state) { _requestGeoFence(state); },
+        [this]() {
+            qCDebug(InitialConnectStateMachineLog) << "Skipping geofence load" << _lastSkipReason;
+        }
+    );
+
+    // State 6: Request rally points (skippable)
+    // No timeout: PlanManager handles all timeouts/retries internally and always signals completion.
+    _stateRallyPoints = new SkippableAsyncState(
+        QStringLiteral("RequestRallyPoints"),
+        this,
+        [this]() {
+            if (_shouldSkipForPlanLoad()) {
+                return true;
+            }
+            if (!vehicle()->_rallyPointManager->supported()) {
+                _lastSkipReason = QStringLiteral("(not supported by vehicle)");
+                return true;
+            }
+            return false;
+        },
+        [this](SkippableAsyncState* state) { _requestRallyPoints(state); },
+        [this]() {
+            qCDebug(InitialConnectStateMachineLog) << "Skipping rally points load" << _lastSkipReason;
+            // Mark plan request complete when skipping
+            vehicle()->_initialPlanRequestComplete = true;
+            emit vehicle()->initialPlanRequestCompleteChanged(true);
+        }
+    );
+
+    // State 7: Signal completion
+    // Use RetryState with zero retries so completion participates in the unified
+    // retry/error state family while preserving immediate success behavior.
+    _stateComplete = new RetryState(
+        QStringLiteral("SignalComplete"),
+        this,
+        [this]() {
+            _signalComplete();
+            return true;
+        },
+        0,
+        0,
+        RetryState::EmitError
+    );
+
+    // Final state
+    _stateFinal = new QGCFinalState(QStringLiteral("Final"), this);
 }
 
-void InitialConnectStateMachine::_stateRequestProtocolVersion(StateMachine* stateMachine)
+void InitialConnectStateMachine::_wireTransitions()
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-    WeakLinkInterfacePtr        weakLink        = vehicle->vehicleLinkManager()->primaryLink();
+    // Linear progression - use completed() for WaitStateBase-derived states (more semantic)
+    _stateAutopilotVersion->addTransition(_stateAutopilotVersion, &WaitStateBase::completed, _stateStandardModes);
+    _stateStandardModes->addTransition(_stateStandardModes, &WaitStateBase::completed, _stateCompInfo);
+    _stateCompInfo->addTransition(_stateCompInfo, &WaitStateBase::completed, _stateParameters);
 
-    if (weakLink.expired()) {
-        qCDebug(InitialConnectStateMachineLog) << "_stateRequestProtocolVersion Skipping protocol version request due to no primary link";
-        connectMachine->advance();
+    // SkippableAsyncStates: both completed and skipped go to next state
+
+    _stateParameters->addTransition(_stateParameters, &WaitStateBase::completed, _stateMission);
+    _stateParameters->addTransition(_stateParameters, &SkippableAsyncState::skipped, _stateMission);
+
+    _stateMission->addTransition(_stateMission, &WaitStateBase::completed, _stateGeoFence);
+    _stateMission->addTransition(_stateMission, &SkippableAsyncState::skipped, _stateGeoFence);
+
+    _stateGeoFence->addTransition(_stateGeoFence, &WaitStateBase::completed, _stateRallyPoints);
+    _stateGeoFence->addTransition(_stateGeoFence, &SkippableAsyncState::skipped, _stateRallyPoints);
+
+    _stateRallyPoints->addTransition(_stateRallyPoints, &WaitStateBase::completed, _stateComplete);
+    _stateRallyPoints->addTransition(_stateRallyPoints, &SkippableAsyncState::skipped, _stateComplete);
+
+    // Complete -> Final (RetryState emits advance() on success)
+    _stateComplete->addTransition(_stateComplete, &QGCState::advance, _stateFinal);
+}
+
+void InitialConnectStateMachine::_wireProgressTracking()
+{
+    // Use QGCStateMachine's built-in weighted progress tracking
+    // Progress is automatically updated when states are entered
+    setProgressWeights({
+        {_stateAutopilotVersion, 1},
+        {_stateStandardModes, 1},
+        {_stateCompInfo, 5},
+        {_stateParameters, 5},
+        {_stateMission, 2},
+        {_stateGeoFence, 1},
+        {_stateRallyPoints, 1},
+        {_stateComplete, 1}
+    });
+}
+
+void InitialConnectStateMachine::_onSubProgressUpdate(double progressValue)
+{
+    setSubProgress(static_cast<float>(progressValue));
+}
+
+// ============================================================================
+// Skip Predicates
+// ============================================================================
+
+bool InitialConnectStateMachine::_shouldSkipAutopilotVersionRequest() const
+{
+    SharedLinkInterfacePtr sharedLink = vehicle()->vehicleLinkManager()->primaryLink().lock();
+    if (!sharedLink) {
+        qCDebug(InitialConnectStateMachineLog) << "Skipping AUTOPILOT_VERSION: no primary link";
+        return true;
+    }
+    if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isLogReplay()) {
+        qCDebug(InitialConnectStateMachineLog) << "Skipping AUTOPILOT_VERSION: high latency or log replay";
+        return true;
+    }
+    return false;
+}
+
+bool InitialConnectStateMachine::_shouldSkipForArmed() const
+{
+    if (!SettingsManager::instance()->mavlinkSettings()->noInitialDownloadWhenArmed()->rawValue().toBool()) {
+        return false;
+    }
+    return vehicle()->armed();
+}
+
+bool InitialConnectStateMachine::_shouldSkipForLinkType() const
+{
+    SharedLinkInterfacePtr sharedLink = vehicle()->vehicleLinkManager()->primaryLink().lock();
+    if (!sharedLink) {
+        return true;
+    }
+    return sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isLogReplay();
+}
+
+bool InitialConnectStateMachine::_hasPrimaryLink() const
+{
+    SharedLinkInterfacePtr sharedLink = vehicle()->vehicleLinkManager()->primaryLink().lock();
+    return sharedLink != nullptr;
+}
+
+bool InitialConnectStateMachine::_shouldSkipForPlanLoad()
+{
+    if (_shouldSkipForArmed()) {
+        _lastSkipReason = QStringLiteral("(vehicle is armed)");
+        return true;
+    }
+    if (!_hasPrimaryLink()) {
+        _lastSkipReason = QStringLiteral("(no primary link)");
+        return true;
+    }
+    if (_shouldSkipForLinkType()) {
+        _lastSkipReason = QStringLiteral("(high latency or log replay link)");
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// State Callbacks
+// ============================================================================
+
+void InitialConnectStateMachine::_handleAutopilotVersionSuccess(const mavlink_message_t& message)
+{
+    qCDebug(InitialConnectStateMachineLog) << "AUTOPILOT_VERSION received";
+
+    mavlink_autopilot_version_t autopilotVersion;
+    mavlink_msg_autopilot_version_decode(&message, &autopilotVersion);
+
+    vehicle()->_uid = (quint64)autopilotVersion.uid;
+    vehicle()->_firmwareBoardVendorId = autopilotVersion.vendor_id;
+    vehicle()->_firmwareBoardProductId = autopilotVersion.product_id;
+    emit vehicle()->vehicleUIDChanged();
+
+    if (autopilotVersion.flight_sw_version != 0) {
+        int majorVersion, minorVersion, patchVersion;
+        FIRMWARE_VERSION_TYPE versionType;
+
+        majorVersion = (autopilotVersion.flight_sw_version >> (8*3)) & 0xFF;
+        minorVersion = (autopilotVersion.flight_sw_version >> (8*2)) & 0xFF;
+        patchVersion = (autopilotVersion.flight_sw_version >> (8*1)) & 0xFF;
+        versionType = (FIRMWARE_VERSION_TYPE)((autopilotVersion.flight_sw_version >> (8*0)) & 0xFF);
+        vehicle()->setFirmwareVersion(majorVersion, minorVersion, patchVersion, versionType);
+    }
+
+    if (vehicle()->px4Firmware()) {
+        // Lower 3 bytes is custom version
+        int majorVersion, minorVersion, patchVersion;
+        majorVersion = autopilotVersion.flight_custom_version[2];
+        minorVersion = autopilotVersion.flight_custom_version[1];
+        patchVersion = autopilotVersion.flight_custom_version[0];
+        vehicle()->setFirmwareCustomVersion(majorVersion, minorVersion, patchVersion);
+
+        // PX4 Firmware stores the first 16 characters of the git hash as binary, with the individual bytes in reverse order
+        vehicle()->_gitHash = "";
+        for (int i = 7; i >= 0; i--) {
+            vehicle()->_gitHash.append(QString("%1").arg(autopilotVersion.flight_custom_version[i], 2, 16, QChar('0')));
+        }
     } else {
-        SharedLinkInterfacePtr sharedLink = weakLink.lock();
-
-        if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isPX4Flow() || sharedLink->isLogReplay()) {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestProtocolVersion Skipping protocol version request due to link type";
-            connectMachine->advance();
-        } else {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestProtocolVersion Requesting protocol version";
-            vehicle->_waitForMavlinkMessage(_waitForProtocolVersionResultHandler, connectMachine, MAVLINK_MSG_ID_PROTOCOL_VERSION, 1000);
-            vehicle->sendMavCommandWithHandler(_protocolVersionCmdResultHandler,
-                                               connectMachine,
-                                               MAV_COMP_ID_AUTOPILOT1,
-                                               MAV_CMD_REQUEST_PROTOCOL_VERSION,
-                                               1);                                      // Request protocol version
-        }
+        // APM Firmware stores the first 8 characters of the git hash as an ASCII character string
+        char nullStr[9];
+        strncpy(nullStr, (char*)autopilotVersion.flight_custom_version, 8);
+        nullStr[8] = 0;
+        vehicle()->_gitHash = nullStr;
     }
+
+    if (QGCCorePlugin::instance()->options()->checkFirmwareVersion() && !vehicle()->_checkLatestStableFWDone) {
+        vehicle()->_checkLatestStableFWDone = true;
+        vehicle()->_firmwarePlugin->checkIfIsLatestStable(vehicle());
+    }
+    emit vehicle()->gitHashChanged(vehicle()->_gitHash);
+
+    vehicle()->_setCapabilities(autopilotVersion.capabilities);
 }
 
-void InitialConnectStateMachine::_protocolVersionCmdResultHandler(void* resultHandlerData, int /*compId*/, MAV_RESULT result, Vehicle::MavCmdResultFailureCode_t failureCode)
+void InitialConnectStateMachine::_handleAutopilotVersionFailure()
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(resultHandlerData);
+    qCDebug(InitialConnectStateMachineLog) << "AUTOPILOT_VERSION request failed, setting assumed capabilities";
 
-    if (result != MAV_RESULT_ACCEPTED) {
-        Vehicle* vehicle = connectMachine->_vehicle;
-
-        switch (failureCode) {
-        case Vehicle::MavCmdResultCommandResultOnly:
-            qCDebug(InitialConnectStateMachineLog) << QStringLiteral("MAV_CMD_REQUEST_PROTOCOL_VERSION error(%1)").arg(result);
-            break;
-        case Vehicle::MavCmdResultFailureNoResponseToCommand:
-            qCDebug(InitialConnectStateMachineLog) << "MAV_CMD_REQUEST_PROTOCOL_VERSION no response from vehicle";
-            break;
-        case Vehicle::MavCmdResultFailureDuplicateCommand:
-            qCDebug(InitialConnectStateMachineLog) << "Internal Error: MAV_CMD_REQUEST_PROTOCOL_VERSION could not be sent due to duplicate command";
-            break;
-        }
-
-        // _mavlinkProtocolRequestMaxProtoVersion stays at 0 to indicate unknown
-        vehicle->_mavlinkProtocolRequestComplete = true;
-        vehicle->_setMaxProtoVersionFromBothSources();
-        vehicle->_waitForMavlinkMessageClear();
+    uint64_t assumedCapabilities = MAV_PROTOCOL_CAPABILITY_MAVLINK2;
+    if (vehicle()->px4Firmware() || vehicle()->apmFirmware()) {
+        // We make some assumptions for known firmware
+        assumedCapabilities |= MAV_PROTOCOL_CAPABILITY_MISSION_INT | MAV_PROTOCOL_CAPABILITY_COMMAND_INT |
+                               MAV_PROTOCOL_CAPABILITY_MISSION_FENCE | MAV_PROTOCOL_CAPABILITY_MISSION_RALLY;
     }
-    connectMachine->advance();
+    vehicle()->_setCapabilities(assumedCapabilities);
 }
 
-void InitialConnectStateMachine::_waitForProtocolVersionResultHandler(void* resultHandlerData, bool noResponsefromVehicle, const mavlink_message_t& message)
+void InitialConnectStateMachine::_requestStandardModes(AsyncFunctionState* state)
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(resultHandlerData);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
+    qCDebug(InitialConnectStateMachineLog) << "_stateRequestStandardModes";
 
-    if (noResponsefromVehicle) {
-        qCDebug(InitialConnectStateMachineLog) << "PROTOCOL_VERSION timeout";
-        // The PROTOCOL_VERSION message didn't make it through the pipe from Vehicle->QGC.
-        // This means although the vehicle may support mavlink 2, the pipe does not.
-        qCDebug(InitialConnectStateMachineLog) << QStringLiteral("Setting _maxProtoVersion to 100 due to timeout on receiving PROTOCOL_VERSION message.");
-        vehicle->_mavlinkProtocolRequestMaxProtoVersion = 100;
-        vehicle->_mavlinkProtocolRequestComplete = true;
-        vehicle->_setMaxProtoVersionFromBothSources();
-    } else {
-        mavlink_protocol_version_t protoVersion;
-        mavlink_msg_protocol_version_decode(&message, &protoVersion);
-
-        qCDebug(InitialConnectStateMachineLog) << "PROTOCOL_VERSION received mav_version:" << protoVersion.max_version;
-        vehicle->_mavlinkProtocolRequestMaxProtoVersion = protoVersion.max_version;
-        vehicle->_mavlinkProtocolRequestComplete = true;
-        vehicle->_setMaxProtoVersionFromBothSources();
-    }
-    connectMachine->advance();
+    state->connectToCompletion(vehicle()->_standardModes, &StandardModes::requestCompleted);
+    vehicle()->_standardModes->request();
 }
 
-void InitialConnectStateMachine::_stateRequestCompInfo(StateMachine* stateMachine)
+void InitialConnectStateMachine::_requestCompInfo(AsyncFunctionState* state)
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-
     qCDebug(InitialConnectStateMachineLog) << "_stateRequestCompInfo";
-    connect(vehicle->_componentInformationManager, &ComponentInformationManager::progressUpdate, connectMachine,
-            &InitialConnectStateMachine::gotProgressUpdate);
-    vehicle->_componentInformationManager->requestAllComponentInformation(_stateRequestCompInfoComplete, connectMachine);
+
+    connect(vehicle()->_componentInformationManager, &ComponentInformationManager::progressUpdate,
+            this, &InitialConnectStateMachine::_onSubProgressUpdate, Qt::UniqueConnection);
+
+    // Ensure progress tracking is always cleaned up, including timeout/skip paths.
+    state->setOnExit([this]() {
+        disconnect(vehicle()->_componentInformationManager, &ComponentInformationManager::progressUpdate,
+                   this, &InitialConnectStateMachine::_onSubProgressUpdate);
+    });
+
+    state->connectToCompletion(vehicle()->_componentInformationManager, &ComponentInformationManager::requestAllComplete);
+    vehicle()->_componentInformationManager->requestAllComponentInformation(nullptr, nullptr);
 }
 
-void InitialConnectStateMachine::_stateRequestCompInfoComplete(void* requestAllCompleteFnData)
+void InitialConnectStateMachine::_requestParameters(SkippableAsyncState* state)
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(requestAllCompleteFnData);
-    disconnect(connectMachine->_vehicle->_componentInformationManager, &ComponentInformationManager::progressUpdate,
-            connectMachine, &InitialConnectStateMachine::gotProgressUpdate);
-
-    connectMachine->advance();
-}
-
-void InitialConnectStateMachine::_stateRequestParameters(StateMachine* stateMachine)
-{
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-
     qCDebug(InitialConnectStateMachineLog) << "_stateRequestParameters";
-    connect(vehicle->_parameterManager, &ParameterManager::loadProgressChanged, connectMachine,
-            &InitialConnectStateMachine::gotProgressUpdate);
-    vehicle->_parameterManager->refreshAllParameters();
+
+    const bool cacheOnly = _shouldSkipForArmed();
+    QMetaObject::Connection cacheFailedConn;
+    if (cacheOnly) {
+        // If cache-only check fails (miss/timeout/non-PX4), complete the state without params
+        cacheFailedConn =
+            connect(vehicle()->_parameterManager, &ParameterManager::cacheCheckOnlyFailed, state, [state, this]() {
+                qCDebug(InitialConnectStateMachineLog)
+                    << "Parameter cache check failed while armed, advancing without parameters";
+                vehicle()->_parameterManager->setParameterDownloadSkipped(true);
+                state->complete();
+            });
+    }
+
+    connect(vehicle()->_parameterManager, &ParameterManager::loadProgressChanged,
+            this, &InitialConnectStateMachine::_onSubProgressUpdate, Qt::UniqueConnection);
+
+    // If the vehicle never answers PARAM_REQUEST_LIST, advance without parameters
+    const QMetaObject::Connection requestFailedConn = connect(vehicle()->_parameterManager, &ParameterManager::initialParametersRequestFailed,
+            state, [state]() {
+                qCDebug(InitialConnectStateMachineLog) << "Initial parameter request failed, advancing without parameters";
+                state->complete();
+            });
+
+    state->connectToCompletion(vehicle()->_parameterManager, &ParameterManager::parametersReadyChanged,
+        [this](bool parametersReady) {
+            _onParametersReady(parametersReady);
+        });
+
+    // Ensure progress tracking is always cleaned up, including failure/skip paths.
+    state->setOnExit([this, cacheFailedConn, requestFailedConn]() {
+        disconnect(vehicle()->_parameterManager, &ParameterManager::loadProgressChanged,
+                   this, &InitialConnectStateMachine::_onSubProgressUpdate);
+        disconnect(requestFailedConn);
+        if (cacheFailedConn) {
+            disconnect(cacheFailedConn);
+        }
+    });
+
+    if (cacheOnly) {
+        vehicle()->_parameterManager->tryHashCheckCacheLoad();
+    } else {
+        vehicle()->_parameterManager->refreshAllParameters(MAV_COMP_ID_ALL);
+    }
 }
 
-void InitialConnectStateMachine::_stateRequestMission(StateMachine* stateMachine)
+void InitialConnectStateMachine::_onParametersReady(bool parametersReady)
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-    WeakLinkInterfacePtr        weakLink        = vehicle->vehicleLinkManager()->primaryLink();
+    qCDebug(InitialConnectStateMachineLog) << "_onParametersReady" << parametersReady;
 
-    disconnect(vehicle->_parameterManager, &ParameterManager::loadProgressChanged, connectMachine,
-            &InitialConnectStateMachine::gotProgressUpdate);
+    // Disconnect progress tracking from parameter manager
+    disconnect(vehicle()->_parameterManager, &ParameterManager::loadProgressChanged,
+               this, &InitialConnectStateMachine::_onSubProgressUpdate);
 
-    if (weakLink.expired()) {
-        qCDebug(InitialConnectStateMachineLog) << "_stateRequestMission: Skipping first mission load request due to no primary link";
-        connectMachine->advance();
-    } else {
-        SharedLinkInterfacePtr sharedLink = weakLink.lock();
+    if (parametersReady) {
+        // Send time to vehicle (twice for reliability on noisy links)
+        vehicle()->_sendQGCTimeToVehicle();
+        vehicle()->_sendQGCTimeToVehicle();
 
-        if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isPX4Flow() || sharedLink->isLogReplay()) {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestMission: Skipping first mission load request due to link type";
-            vehicle->_firstMissionLoadComplete();
-        } else {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestMission";
-            vehicle->_missionManager->loadFromVehicle();
+        // Set up auto-disarm signalling
+        vehicle()->_setupAutoDisarmSignalling();
+
+        // Note: Speed limits are handled by Vehicle::_parametersReady
+
+        if (_stateParameters) {
+            _stateParameters->complete();
         }
     }
 }
 
-void InitialConnectStateMachine::_stateRequestGeoFence(StateMachine* stateMachine)
+void InitialConnectStateMachine::_requestMission(SkippableAsyncState* state)
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-    WeakLinkInterfacePtr        weakLink        = vehicle->vehicleLinkManager()->primaryLink();
+    qCDebug(InitialConnectStateMachineLog) << "_stateRequestMission";
 
-    if (weakLink.expired()) {
-        qCDebug(InitialConnectStateMachineLog) << "_stateRequestGeoFence: Skipping first geofence load request due to no primary link";
-        connectMachine->advance();
-    } else {
-        SharedLinkInterfacePtr sharedLink = weakLink.lock();
+    connect(vehicle()->_missionManager, &MissionManager::progressPctChanged,
+            this, &InitialConnectStateMachine::_onSubProgressUpdate, Qt::UniqueConnection);
 
-        if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isPX4Flow() || sharedLink->isLogReplay()) {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestGeoFence: Skipping first geofence load request due to link type";
-            vehicle->_firstGeoFenceLoadComplete();
-        } else {
-            if (vehicle->_geoFenceManager->supported()) {
-                qCDebug(InitialConnectStateMachineLog) << "_stateRequestGeoFence";
-                vehicle->_geoFenceManager->loadFromVehicle();
-            } else {
-                qCDebug(InitialConnectStateMachineLog) << "_stateRequestGeoFence: skipped due to no support";
-                vehicle->_firstGeoFenceLoadComplete();
+    state->connectToCompletion(vehicle()->_missionManager, &MissionManager::newMissionItemsAvailable);
+
+    // Disconnect progress tracking on exit
+    state->setOnExit([this]() {
+        disconnect(vehicle()->_missionManager, &MissionManager::progressPctChanged,
+                   this, &InitialConnectStateMachine::_onSubProgressUpdate);
+    });
+
+    vehicle()->_missionManager->loadFromVehicle();
+}
+
+void InitialConnectStateMachine::_requestGeoFence(SkippableAsyncState* state)
+{
+    qCDebug(InitialConnectStateMachineLog) << "_stateRequestGeoFence";
+
+    connect(vehicle()->_geoFenceManager, &GeoFenceManager::progressPctChanged,
+            this, &InitialConnectStateMachine::_onSubProgressUpdate, Qt::UniqueConnection);
+
+    state->connectToCompletion(vehicle()->_geoFenceManager, &GeoFenceManager::loadComplete);
+
+    // Disconnect progress tracking on exit
+    state->setOnExit([this]() {
+        disconnect(vehicle()->_geoFenceManager, &GeoFenceManager::progressPctChanged,
+                   this, &InitialConnectStateMachine::_onSubProgressUpdate);
+    });
+
+    vehicle()->_geoFenceManager->loadFromVehicle();
+}
+
+void InitialConnectStateMachine::_requestRallyPoints(SkippableAsyncState* state)
+{
+    qCDebug(InitialConnectStateMachineLog) << "_stateRequestRallyPoints";
+
+    connect(vehicle()->_rallyPointManager, &RallyPointManager::progressPctChanged,
+            this, &InitialConnectStateMachine::_onSubProgressUpdate, Qt::UniqueConnection);
+
+    state->connectToCompletion(vehicle()->_rallyPointManager, &RallyPointManager::loadComplete,
+        [this]() {
+            // Mark initial plan request complete
+            vehicle()->_initialPlanRequestComplete = true;
+            emit vehicle()->initialPlanRequestCompleteChanged(true);
+
+            if (_stateRallyPoints) {
+                _stateRallyPoints->complete();
             }
-        }
-    }
+        });
+
+    // Always clean up progress tracking when leaving this state.
+    state->setOnExit([this]() {
+        disconnect(vehicle()->_rallyPointManager, &RallyPointManager::progressPctChanged,
+                   this, &InitialConnectStateMachine::_onSubProgressUpdate);
+    });
+
+    vehicle()->_rallyPointManager->loadFromVehicle();
 }
 
-void InitialConnectStateMachine::_stateRequestRallyPoints(StateMachine* stateMachine)
+void InitialConnectStateMachine::_signalComplete()
 {
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-    WeakLinkInterfacePtr        weakLink        = vehicle->vehicleLinkManager()->primaryLink();
-
-    if (weakLink.expired()) {
-        qCDebug(InitialConnectStateMachineLog) << "_stateRequestRallyPoints: Skipping first rally point load request due to no primary link";
-        connectMachine->advance();
-    } else {
-        SharedLinkInterfacePtr sharedLink = weakLink.lock();
-
-        if (sharedLink->linkConfiguration()->isHighLatency() || sharedLink->isPX4Flow() || sharedLink->isLogReplay()) {
-            qCDebug(InitialConnectStateMachineLog) << "_stateRequestRallyPoints: Skipping first rally point load request due to link type";
-            vehicle->_firstRallyPointLoadComplete();
-        } else {
-            if (vehicle->_rallyPointManager->supported()) {
-                vehicle->_rallyPointManager->loadFromVehicle();
-            } else {
-                qCDebug(InitialConnectStateMachineLog) << "_stateRequestRallyPoints: skipping due to no support";
-                vehicle->_firstRallyPointLoadComplete();
-            }
-        }
-    }
-}
-
-void InitialConnectStateMachine::_stateSignalInitialConnectComplete(StateMachine* stateMachine)
-{
-    InitialConnectStateMachine* connectMachine  = static_cast<InitialConnectStateMachine*>(stateMachine);
-    Vehicle*                    vehicle         = connectMachine->_vehicle;
-
-    connectMachine->advance();
     qCDebug(InitialConnectStateMachineLog) << "Signalling initialConnectComplete";
-    emit vehicle->initialConnectComplete();
+    connect(this, &QStateMachine::finished, vehicle(), [this]() {
+        emit vehicle()->initialConnectComplete();
+    }, Qt::SingleShotConnection);
 }
-

@@ -1,67 +1,73 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
-
 #pragma once
 
-#include "StateMachine.h"
-#include "QGCMAVLink.h"
-#include "QGCLoggingCategory.h"
-#include "Vehicle.h"
-
-Q_DECLARE_LOGGING_CATEGORY(InitialConnectStateMachineLog)
+#include "QGCStateMachine.h"
+#include "MAVLinkMessageType.h"
 
 class Vehicle;
+class SkippableAsyncState;
+class AsyncFunctionState;
+class RetryableRequestMessageState;
+class RetryState;
 
-class InitialConnectStateMachine : public StateMachine
+/// \brief State machine for initial vehicle connection sequence.
+///
+/// Handles requesting autopilot version, standard modes, component info,
+/// parameters, missions, geofence, and rally points in sequence.
+///
+/// Uses QGCStateMachine's built-in weighted progress tracking where different
+/// states contribute different amounts to the overall progress (e.g., parameter
+/// loading takes longer than version request).
+///
+class InitialConnectStateMachine : public QGCStateMachine
 {
     Q_OBJECT
 
 public:
-    InitialConnectStateMachine(Vehicle* vehicle);
+    explicit InitialConnectStateMachine(Vehicle* vehicle, QObject* parent = nullptr);
+    ~InitialConnectStateMachine() override;
 
-    // Overrides from StateMachine
-    int             stateCount      (void) const final;
-    const StateFn*  rgStates        (void) const final;
-    void            statesCompleted (void) const final;
-
-    void advance() override;
-
-signals:
-    void progressUpdate(float progress);
+    void start();
 
 private slots:
-    void gotProgressUpdate(float progressValue);
+    void _onSubProgressUpdate(double progressValue);
 
 private:
-    static void _stateRequestCapabilities               (StateMachine* stateMachine);
-    static void _stateRequestProtocolVersion            (StateMachine* stateMachine);
-    static void _stateRequestCompInfo                   (StateMachine* stateMachine);
-    static void _stateRequestCompInfoComplete           (void* requestAllCompleteFnData);
-    static void _stateRequestParameters                 (StateMachine* stateMachine);
-    static void _stateRequestMission                    (StateMachine* stateMachine);
-    static void _stateRequestGeoFence                   (StateMachine* stateMachine);
-    static void _stateRequestRallyPoints                (StateMachine* stateMachine);
-    static void _stateSignalInitialConnectComplete      (StateMachine* stateMachine);
+    // State creation and wiring
+    void _createStates();
+    void _wireTransitions();
+    void _wireProgressTracking();
 
-    static void _capabilitiesCmdResultHandler           (void* resultHandlerData, int compId, MAV_RESULT result, Vehicle::MavCmdResultFailureCode_t failureCode);
-    static void _protocolVersionCmdResultHandler        (void* resultHandlerData, int compId, MAV_RESULT result, Vehicle::MavCmdResultFailureCode_t failureCode);
+    // State callbacks
+    void _handleAutopilotVersionSuccess(const mavlink_message_t& message);
+    void _handleAutopilotVersionFailure();
+    void _requestStandardModes(AsyncFunctionState* state);
+    void _requestCompInfo(AsyncFunctionState* state);
+    void _requestParameters(SkippableAsyncState* state);
+    void _onParametersReady(bool ready);
+    void _requestMission(SkippableAsyncState* state);
+    void _requestGeoFence(SkippableAsyncState* state);
+    void _requestRallyPoints(SkippableAsyncState* state);
+    void _signalComplete();
 
-    static void _waitForAutopilotVersionResultHandler   (void* resultHandlerData, bool noResponsefromVehicle, const mavlink_message_t& message);
-    static void _waitForProtocolVersionResultHandler    (void* resultHandlerData, bool noResponsefromVehicle, const mavlink_message_t& message);
+    // Skip predicates
+    bool _shouldSkipAutopilotVersionRequest() const;
+    bool _shouldSkipForArmed() const;
+    bool _shouldSkipForLinkType() const;
+    bool _hasPrimaryLink() const;
+    bool _shouldSkipForPlanLoad();
 
-    float _progress(float subProgress = 0.f);
+    QString _lastSkipReason;
 
-    Vehicle* _vehicle;
+    // State pointers for wiring
+    RetryableRequestMessageState* _stateAutopilotVersion = nullptr;
+    AsyncFunctionState* _stateStandardModes = nullptr;
+    AsyncFunctionState* _stateCompInfo = nullptr;
+    SkippableAsyncState* _stateParameters = nullptr;
+    SkippableAsyncState* _stateMission = nullptr;
+    SkippableAsyncState* _stateGeoFence = nullptr;
+    SkippableAsyncState* _stateRallyPoints = nullptr;
+    RetryState* _stateComplete = nullptr;
+    QGCFinalState* _stateFinal = nullptr;
 
-    static const StateFn    _rgStates[];
-    static const int        _rgProgressWeights[];
-    static const int        _cStates;
-
-    int _progressWeightTotal;
+    static constexpr int _autopilotVersionMaxRetries = 1;
 };

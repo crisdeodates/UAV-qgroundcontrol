@@ -1,26 +1,14 @@
-/****************************************************************************
- *
- * (c) 2021 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
-import QtQuick          2.3
-import QtQuick.Controls 1.2
-import QtQuick.Layouts  1.2
-
-import QGroundControl               1.0
-import QGroundControl.Controls      1.0
-import QGroundControl.FactSystem    1.0
-import QGroundControl.FactControls  1.0
-import QGroundControl.ScreenTools   1.0
-import QGroundControl.Vehicle       1.0
+import QGroundControl
+import QGroundControl.Controls
+import QGroundControl.FactControls
 
 ColumnLayout {
-    width: availableWidth
-    anchors.fill: parent
+    property real _availableHeight: availableHeight
+    property real _availableWidth:  availableWidth
     property Fact _mcPosMode:       controller.getParameterFact(-1, "MPC_POS_MODE", false)
 
     GridLayout {
@@ -38,7 +26,10 @@ ColumnLayout {
     }
 
     PIDTuning {
-        width: availableWidth
+        id:                 pidTuning
+        availableWidth:     _availableWidth
+        availableHeight:    _availableHeight - pidTuning.y
+
         property var horizontal: QtObject {
             property string name: qsTr("Horizontal")
             property string plotTitle: qsTr("Horizontal (Y direction, sidewards)")
@@ -106,11 +97,9 @@ ColumnLayout {
                 }
             }
         }
-        title: "Velocity"
+        title: qsTr("Velocity")
         tuningMode: Vehicle.ModeVelocityAndPosition
         unit: "m/s"
         axis: [ horizontal, vertical ]
     }
 }
-
-

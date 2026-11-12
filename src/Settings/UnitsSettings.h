@@ -1,21 +1,14 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+#pragma once
 
-#ifndef UnitsSettings_H
-#define UnitsSettings_H
+#include <QtQmlIntegration/QtQmlIntegration>
 
 #include "SettingsGroup.h"
 
 class UnitsSettings : public SettingsGroup
 {
     Q_OBJECT
-    
+    QML_ELEMENT
+    QML_UNCREATABLE("")
 public:
     UnitsSettings(QObject* parent = nullptr);
 
@@ -58,12 +51,20 @@ public:
         WeightUnitsLbs
     };
 
+    enum CoordinateFormat {
+        CoordinateFormatDecimal = 0,
+        CoordinateFormatDMS,
+        CoordinateFormatUTM,
+        CoordinateFormatMGRS
+    };
+
     Q_ENUM(HorizontalDistanceUnits)
     Q_ENUM(VerticalDistanceUnits)
     Q_ENUM(AreaUnits)
     Q_ENUM(SpeedUnits)
     Q_ENUM(TemperatureUnits)
     Q_ENUM(WeightUnits)
+    Q_ENUM(CoordinateFormat)
 
     DEFINE_SETTING_NAME_GROUP()
 
@@ -73,6 +74,5 @@ public:
     DEFINE_SETTINGFACT(speedUnits)
     DEFINE_SETTINGFACT(temperatureUnits)
     DEFINE_SETTINGFACT(weightUnits)
+    DEFINE_SETTINGFACT(coordinateFormat)
 };
-
-#endif

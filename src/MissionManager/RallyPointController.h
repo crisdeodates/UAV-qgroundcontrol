@@ -1,34 +1,24 @@
-/****************************************************************************
- *
- * (c) 2009-2020 QGROUNDCONTROL PROJECT <http://www.qgroundcontrol.org>
- *
- * QGroundControl is licensed according to the terms in the file
- * COPYING.md in the root of the source code directory.
- *
- ****************************************************************************/
+#pragma once
 
-#ifndef RallyPointController_H
-#define RallyPointController_H
+#include <QtPositioning/QGeoCoordinate>
+#include <QtQmlIntegration/QtQmlIntegration>
 
 #include "PlanElementController.h"
-#include "RallyPointManager.h"
-#include "Vehicle.h"
-#include "MultiVehicleManager.h"
-#include "QGCLoggingCategory.h"
 #include "QmlObjectListModel.h"
 
-Q_DECLARE_LOGGING_CATEGORY(RallyPointControllerLog)
-
 class GeoFenceManager;
+class RallyPointManager;
+class Vehicle;
 
 class RallyPointController : public PlanElementController
 {
     Q_OBJECT
-    
+    QML_ELEMENT
+    QML_UNCREATABLE("")
 public:
-    RallyPointController(PlanMasterController* masterController, QObject* parent = nullptr);
+    explicit RallyPointController(PlanMasterController* masterController, QObject* parent = nullptr);
     ~RallyPointController();
-    
+
     Q_PROPERTY(QmlObjectListModel*  points                  READ points                                             CONSTANT)
     Q_PROPERTY(QString              editorQml               READ editorQml                                          CONSTANT)
     Q_PROPERTY(QObject*             currentRallyPoint       READ currentRallyPoint      WRITE setCurrentRallyPoint  NOTIFY currentRallyPointChanged)
@@ -57,6 +47,9 @@ public:
     void setCurrentRallyPoint   (QObject* rallyPoint);
     bool isEmpty                (void) const;
 
+    /// true: a rally point is still waiting on terrain data for its altitude
+    bool terrainQueryPending(void) const;
+
 signals:
     void currentRallyPointChanged(QObject* rallyPoint);
     void loadComplete(void);
@@ -66,8 +59,8 @@ private slots:
     void _managerSendComplete       (bool error);
     void _managerRemoveAllComplete  (bool error);
     void _setFirstPointCurrent      (void);
-    void _updateContainsItems       (void);
     void _managerVehicleChanged     (Vehicle* managerVehicle);
+    void _pointsDirtyChanged        (bool dirty);
 
 private:
     Vehicle*            _managerVehicle =       nullptr;
@@ -77,9 +70,10 @@ private:
     QObject*            _currentRallyPoint =    nullptr;
     bool                _itemsRequested =       false;
 
-    static const int    _jsonCurrentVersion = 2;
-    static const char*  _jsonFileTypeValue;
-    static const char*  _jsonPointsKey;
+    static constexpr int _jsonCurrentVersion = 3;
+    static constexpr int _jsonOldestSupportedVersion = 2;
+    static constexpr const char* _jsonFileTypeValue = "RallyPoints";
+    static constexpr const char* _jsonPointsKey = "points";
+    static constexpr const char* _jsonCoordinateKey = "coordinate";
+    static constexpr const char* _jsonFrameKey = "frame";
 };
-
-#endif
